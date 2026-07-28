@@ -4,9 +4,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { BudConfig } from "../agent/lib/config.js";
 import { createBudTelegramChannel } from "../agent/lib/telegram-channel.js";
+import {
+  PersonalOrganizerError,
+  type PersonalOrganizer,
+  type PersonalOrganizerFailure,
+} from "../agent/lib/personal-organizer.js";
 
 const config: BudConfig = {
   assistantName: "Bud",
+  googleCalendarId: "primary",
+  googleOAuthClientId: "test-client-id",
+  googleOAuthClientSecret: "test-client-secret",
+  googleOAuthRefreshToken: "test-refresh-token",
   modelId: "test/deterministic",
   ownerId: "42",
   telegramBotToken: "test-bot-token",
@@ -61,7 +70,10 @@ function telegramUpdate(input: {
   };
 }
 
-async function deliver(...updates: unknown[]) {
+async function deliverWithOrganizer(
+  organizer: PersonalOrganizer | undefined,
+  ...updates: unknown[]
+) {
   const outbound: Array<{ chatId: string; text: string }> = [];
   const telegramFetch = vi.fn<typeof fetch>(async (request, init) => {
     const body = JSON.parse(String(init?.body)) as {
@@ -84,7 +96,10 @@ async function deliver(...updates: unknown[]) {
     }
     return `Got it: ${message}`;
   });
-  const channel = createBudTelegramChannel(config, telegramFetch);
+  const channel = createBudTelegramChannel(config, telegramFetch, {
+    ...(organizer ? { organizer } : {}),
+    now: () => new Date("2026-07-28T15:00:00.000Z"),
+  });
   const compiled = channel as typeof channel & CompiledTelegramChannel;
   const tasks: Promise<unknown>[] = [];
 
@@ -174,7 +189,249 @@ async function deliver(...updates: unknown[]) {
   return { model, outbound, response: response! };
 }
 
+async function deliver(...updates: unknown[]) {
+  return deliverWithOrganizer(undefined, ...updates);
+}
+
 describe("Telegram Channel", () => {
+  it("answers an unqualified calendar request with the remainder of today", async () => {
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      async listEvents(range) {
+        expect(range).toEqual({
+          end: "2026-07-29T04:00:00.000Z",
+          start: "2026-07-28T15:00:00.000Z",
+          timeZone: "America/New_York",
+        });
+        return [];
+      },
+    };
+
+    const result = await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({
+        chatId: 42,
+        chatType: "private",
+        senderId: 42,
+        text: "What's on my calendar?",
+      }),
+    );
+
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([
+      { chatId: "42", text: "Your calendar is clear for the rest of today." },
+    ]);
+  });
+
+  it("formats populated calendar results in the Calendar timezone", async () => {
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      async listEvents() {
+        return [
+          {
+            end: "2026-07-28T16:00:00.000Z",
+            start: "2026-07-28T15:30:00.000Z",
+            title: "Dentist",
+          },
+        ];
+      },
+    };
+
+    const result = await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "My agenda" }),
+    );
+
+    expect(result.outbound).toEqual([
+      { chatId: "42", text: "11:30 AM–12:00 PM — Dentist" },
+    ]);
+  });
+
+  it("formats date-only events as all-day events", async () => {
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      async listEvents() {
+        return [{ end: "2026-07-31", start: "2026-07-30", title: "Vacation" }];
+      },
+    };
+
+    const result = await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "My agenda" }),
+    );
+
+    expect(result.outbound).toEqual([
+      { chatId: "42", text: "All day — Vacation" },
+    ]);
+  });
+
+  it("uses explicit bounded dates instead of the remainder of today", async () => {
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      async listEvents(range) {
+        expect(range).toEqual({
+          end: "2026-07-31T04:00:00.000Z",
+          start: "2026-07-30T04:00:00.000Z",
+          timeZone: "America/New_York",
+        });
+        return [];
+      },
+    };
+
+    const result = await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({
+        chatId: 42,
+        chatType: "private",
+        senderId: 42,
+        text: "What's on my calendar July 30?",
+      }),
+    );
+
+    expect(result.outbound).toEqual([
+      { chatId: "42", text: "Your calendar is clear for that time." },
+    ]);
+  });
+
+  it("honors an explicit timezone across a daylight-saving date range", async () => {
+    const listEvents = vi.fn(async () => []);
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      listEvents,
+    };
+
+    const result = await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({
+        chatId: 42,
+        chatType: "private",
+        senderId: 42,
+        text: "Show my calendar March 7 to March 9 in America/Los_Angeles",
+      }),
+    );
+
+    expect(listEvents).toHaveBeenCalledWith({
+      end: "2026-03-10T07:00:00.000Z",
+      start: "2026-03-07T08:00:00.000Z",
+      timeZone: "America/Los_Angeles",
+    });
+    expect(result.outbound).toEqual([
+      { chatId: "42", text: "Your calendar is clear for that time." },
+    ]);
+  });
+
+  it("honors timezones with fractional-hour offsets", async () => {
+    const listEvents = vi.fn(async () => []);
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      listEvents,
+    };
+
+    await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({
+        chatId: 42,
+        chatType: "private",
+        senderId: 42,
+        text: "Show my calendar 2026-07-30 in Asia/Kathmandu",
+      }),
+    );
+
+    expect(listEvents).toHaveBeenCalledWith({
+      end: "2026-07-30T18:15:00.000Z",
+      start: "2026-07-29T18:15:00.000Z",
+      timeZone: "Asia/Kathmandu",
+    });
+  });
+
+  it("treats today through tomorrow as an inclusive date range", async () => {
+    const listEvents = vi.fn(async () => []);
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      listEvents,
+    };
+
+    await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({
+        chatId: 42,
+        chatType: "private",
+        senderId: 42,
+        text: "Show my calendar today through tomorrow",
+      }),
+    );
+
+    expect(listEvents).toHaveBeenCalledWith({
+      end: "2026-07-30T04:00:00.000Z",
+      start: "2026-07-28T04:00:00.000Z",
+      timeZone: "America/New_York",
+    });
+  });
+
+  it("rolls yearless ranges into the next year and accepts multi-segment timezones", async () => {
+    const listEvents = vi.fn(async () => []);
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        return "America/New_York";
+      },
+      listEvents,
+    };
+
+    await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({
+        chatId: 42,
+        chatType: "private",
+        senderId: 42,
+        text: "Show my calendar December 31 to January 1 in America/Argentina/Buenos_Aires",
+      }),
+    );
+
+    expect(listEvents).toHaveBeenCalledWith({
+      end: "2027-01-02T03:00:00.000Z",
+      start: "2026-12-31T03:00:00.000Z",
+      timeZone: "America/Argentina/Buenos_Aires",
+    });
+  });
+
+  it.each<[PersonalOrganizerFailure, string]>([
+    ["access-revoked", "Google Calendar access was revoked. Please reconnect it."],
+    ["authentication-expired", "Google Calendar authentication expired. Please reconnect it."],
+    ["rate-limited", "Google Calendar is busy right now. Please try again shortly."],
+    ["unavailable", "Google Calendar is unavailable right now. Please try again later."],
+  ])("returns a safe response when organizer access is %s", async (reason, response) => {
+    const organizer: PersonalOrganizer = {
+      async getDefaultTimeZone() {
+        throw new PersonalOrganizerError(reason);
+      },
+      async listEvents() {
+        return [];
+      },
+    };
+
+    const result = await deliverWithOrganizer(
+      organizer,
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "My calendar" }),
+    );
+
+    expect(result.outbound).toEqual([{ chatId: "42", text: response }]);
+    expect(JSON.stringify(result.outbound)).not.toContain("test-bot-token");
+  });
+
   it("delivers the Owner's private text through Eve and sends the reply", async () => {
     const result = await deliver(
       telegramUpdate({

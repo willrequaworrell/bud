@@ -22,6 +22,9 @@ describe("configuration", () => {
 
   it("uses Bud and a balanced small model by default while allowing overrides", () => {
     const required = {
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+      GOOGLE_OAUTH_REFRESH_TOKEN: "refresh-token",
       TELEGRAM_OWNER_ID: "42",
       TELEGRAM_BOT_TOKEN: "bot-token",
       TELEGRAM_WEBHOOK_SECRET_TOKEN: "webhook-secret",
@@ -29,6 +32,7 @@ describe("configuration", () => {
 
     expect(loadConfig(required)).toMatchObject({
       assistantName: "Bud",
+      googleCalendarId: "primary",
       modelId: "openai/gpt-5.4-mini",
     });
     expect(
@@ -41,5 +45,28 @@ describe("configuration", () => {
       assistantName: "Sprout",
       modelId: "anthropic/claude-haiku-4.5",
     });
+  });
+
+  it("requires Google OAuth credentials without exposing their values", () => {
+    const secret = "google-client-secret-value";
+
+    expect(() => loadConfig({
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: secret,
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_OWNER_ID: "42",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "webhook-secret",
+    })).toThrowError("GOOGLE_OAUTH_REFRESH_TOKEN");
+
+    try {
+      loadConfig({
+        GOOGLE_OAUTH_CLIENT_SECRET: secret,
+        TELEGRAM_BOT_TOKEN: "bot-token",
+        TELEGRAM_OWNER_ID: "42",
+        TELEGRAM_WEBHOOK_SECRET_TOKEN: "webhook-secret",
+      });
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+    }
   });
 });

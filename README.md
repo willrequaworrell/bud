@@ -8,9 +8,10 @@ other Telegram messages before model execution.
 
 - Node.js 24 or newer
 - A Telegram bot token and webhook secret
+- OAuth credentials and an offline refresh token for one personal Google account
 - A Vercel AI Gateway credential available to Eve
 
-Copy `.env.example` to `.env`, fill in the three required Telegram values, then
+Copy `.env.example` to `.env`, fill in the Telegram and Google OAuth values, then
 run:
 
 ```sh
@@ -30,6 +31,15 @@ messages are dropped by the channel before Eve creates a model turn. Shell,
 filesystem, web fetch/search, and delegation tools are disabled explicitly.
 
 Configuration errors name invalid variables but never include their values.
+
+## Calendar reads
+
+Bud reads one Calendar, configured by `GOOGLE_CALENDAR_ID` (`primary` by
+default). The OAuth grant should be for the personal account that owns that
+Calendar and include read-only Google Calendar access. Calendar questions with
+no date return the remainder of today in the Calendar's timezone. Bud also
+accepts `today`, `tomorrow`, named dates, inclusive date ranges, and explicit
+IANA timezones such as `America/Los_Angeles`.
 
 ## Verification
 
