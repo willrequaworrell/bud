@@ -98,20 +98,29 @@ async function deliver(...updates: unknown[]) {
         message?: string;
       };
       if (payload.inputResponses) {
-        let continuationToken = options.continuationToken;
-        await compiled.adapter.deliver(payload, {
-          state: options.state as TelegramChannelState,
-          session: {
-            continuationToken,
-            setContinuationToken(token: string) {
-              continuationToken = token;
-              const history = conversations.get(options.continuationToken);
-              if (history) conversations.set(token, history);
-              conversations.delete(options.continuationToken);
-            },
-          },
-          ctx: {},
-        });
+        let deliveryError: unknown;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          let continuationToken = options.continuationToken;
+          try {
+            await compiled.adapter.deliver(payload, {
+              state: options.state as TelegramChannelState,
+              session: {
+                continuationToken,
+                setContinuationToken(token: string) {
+                  continuationToken = token;
+                  const history = conversations.get(options.continuationToken);
+                  if (history) conversations.set(token, history);
+                  conversations.delete(options.continuationToken);
+                },
+              },
+              ctx: {},
+            });
+            return { id: "test-session" } as Session;
+          } catch (error) {
+            deliveryError = error;
+          }
+        }
+        throw deliveryError;
       }
       const message = payload.message!;
       const history = conversations.get(options.continuationToken) ?? [];

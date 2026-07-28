@@ -88,7 +88,6 @@ export function createBudTelegramChannel(
     },
   });
   const compiled = channel as typeof channel & ResettableTelegramChannel;
-  const completedResets = new Set<string>();
 
   const deliver = compiled.adapter.deliver.bind(compiled.adapter);
   compiled.adapter.deliver = async (payload, ctx) => {
@@ -97,8 +96,7 @@ export function createBudTelegramChannel(
       ctx.session.setContinuationToken(`reset:${crypto.randomUUID()}`);
       const telegram = compiled.adapter.createAdapterContext(ctx).telegram;
       await telegram.sendMessage("Conversation reset.");
-      completedResets.add(resetRequestId);
-      throw new Error("Conversation reset handled by Telegram channel");
+      return;
     }
     return deliver(payload, ctx);
   };
@@ -130,15 +128,10 @@ export function createBudTelegramChannel(
           return completedResetSession(resetRequestId);
         }
 
-        try {
-          return await args.send(
-            { inputResponses: [{ requestId: resetRequestId }] },
-            options,
-          );
-        } catch (error) {
-          if (!completedResets.delete(resetRequestId)) throw error;
-          return completedResetSession(resetRequestId);
-        }
+        return args.send(
+          { inputResponses: [{ requestId: resetRequestId }] },
+          options,
+        );
       },
     });
 
