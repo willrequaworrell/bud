@@ -25,6 +25,17 @@ interface CompiledTelegramChannel {
     }): {
       telegram: { sendMessage(message: string): Promise<unknown> };
     };
+    deliver: (
+      payload: { inputResponses?: Array<{ requestId: string }> },
+      runtime: {
+        state: TelegramChannelState;
+        session: {
+          continuationToken: string;
+          setContinuationToken(token: string): void;
+        };
+        ctx: object;
+      },
+    ) => Promise<unknown>;
   };
 }
 
@@ -50,7 +61,7 @@ function telegramUpdate(input: {
   };
 }
 
-async function deliver(update: unknown) {
+async function deliver(...updates: unknown[]) {
   const outbound: Array<{ chatId: string; text: string }> = [];
   const telegramFetch = vi.fn<typeof fetch>(async (request, init) => {
     const body = JSON.parse(String(init?.body)) as {
@@ -65,7 +76,14 @@ async function deliver(update: unknown) {
       result: { message_id: 8, chat: { id: body.chat_id, type: "private" } },
     });
   });
-  const model = vi.fn(async (message: string) => `Got it: ${message}`);
+  const conversations = new Map<string, string[]>();
+  const model = vi.fn(async (message: string, history: readonly string[]) => {
+    if (message === "Schedule it") return "What day should I schedule it?";
+    if (message === "Tomorrow" && history.includes("Schedule it")) {
+      return "Okay, I'll schedule it tomorrow.";
+    }
+    return `Got it: ${message}`;
+  });
   const channel = createBudTelegramChannel(config, telegramFetch);
   const compiled = channel as typeof channel & CompiledTelegramChannel;
   const tasks: Promise<unknown>[] = [];
@@ -75,38 +93,76 @@ async function deliver(update: unknown) {
 
   const args = {
     send: vi.fn(async (input, options) => {
-      const payload = input as { message: string };
-      const reply = await model(payload.message);
+      const payload = input as {
+        inputResponses?: Array<{ requestId: string }>;
+        message?: string;
+      };
+      if (payload.inputResponses) {
+        let continuationToken = options.continuationToken;
+        await compiled.adapter.deliver(payload, {
+          state: options.state as TelegramChannelState,
+          session: {
+            continuationToken,
+            setContinuationToken(token: string) {
+              continuationToken = token;
+              const history = conversations.get(options.continuationToken);
+              if (history) conversations.set(token, history);
+              conversations.delete(options.continuationToken);
+            },
+          },
+          ctx: {},
+        });
+      }
+      const message = payload.message!;
+      const history = conversations.get(options.continuationToken) ?? [];
+      const reply = await model(message, [...history]);
+      history.push(message);
+      conversations.set(options.continuationToken, history);
+      let continuationToken = options.continuationToken;
       const channelContext = compiled.adapter.createAdapterContext({
         state: options.state as TelegramChannelState,
         session: {
           continuationToken: options.continuationToken,
-          setContinuationToken: vi.fn(),
+          setContinuationToken(token: string) {
+            continuationToken = token;
+          },
         },
         ctx: {},
       });
       await channelContext.telegram.sendMessage(reply);
+      if (continuationToken !== options.continuationToken) {
+        conversations.set(continuationToken, history);
+        conversations.delete(options.continuationToken);
+      }
       return { id: "test-session" } as Session;
     }),
     waitUntil(task: Promise<unknown>) {
       tasks.push(task);
     },
+    async resolveActiveSession(options: { continuationToken: string }) {
+      return conversations.has(options.continuationToken)
+        ? { sessionId: "test-session" }
+        : undefined;
+    },
   } as unknown as RouteHandlerArgs<TelegramChannelState>;
 
-  const response = await route.handler(
-    new Request("https://bud.test/eve/v1/telegram", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-telegram-bot-api-secret-token": config.telegramWebhookSecret,
-      },
-      body: JSON.stringify(update),
-    }),
-    args,
-  );
-  await Promise.all(tasks);
+  let response: Response | undefined;
+  for (const update of updates) {
+    response = await route.handler(
+      new Request("https://bud.test/eve/v1/telegram", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": config.telegramWebhookSecret,
+        },
+        body: JSON.stringify(update),
+      }),
+      args,
+    );
+    await Promise.all(tasks.splice(0));
+  }
 
-  return { model, outbound, response };
+  return { model, outbound, response: response! };
 }
 
 describe("Telegram Channel", () => {
@@ -121,10 +177,45 @@ describe("Telegram Channel", () => {
     );
 
     expect(result.response.status).toBe(200);
-    expect(result.model).toHaveBeenCalledWith("What is next?");
+    expect(result.model).toHaveBeenCalledWith("What is next?", []);
     expect(result.outbound).toEqual([
       { chatId: "42", text: "Got it: What is next?" },
     ]);
+  });
+
+  it("continues the Owner's conversation so a clarification can be resolved", async () => {
+    const result = await deliver(
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "Schedule it" }),
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "Tomorrow" }),
+    );
+
+    expect(result.outbound).toEqual([
+      { chatId: "42", text: "What day should I schedule it?" },
+      { chatId: "42", text: "Okay, I'll schedule it tomorrow." },
+    ]);
+  });
+
+  it("resets conversational and pending input state without touching external data", async () => {
+    const result = await deliver(
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "Schedule it" }),
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "/reset" }),
+      telegramUpdate({ chatId: 42, chatType: "private", senderId: 42, text: "Tomorrow" }),
+    );
+
+    expect(result.outbound).toEqual([
+      { chatId: "42", text: "What day should I schedule it?" },
+      { chatId: "42", text: "Conversation reset." },
+      { chatId: "42", text: "Got it: Tomorrow" },
+    ]);
+    expect(result.model).toHaveBeenCalledTimes(2);
+    expect(result.model).not.toHaveBeenCalledWith("/reset", expect.anything());
+  });
+
+  it("stays reactive and sends nothing without an inbound update", async () => {
+    const result = await deliver();
+
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([]);
   });
 
   it.each(["group", "supergroup"] as const)(
