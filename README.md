@@ -36,10 +36,17 @@ Configuration errors name invalid variables but never include their values.
 
 Bud reads one Calendar, configured by `GOOGLE_CALENDAR_ID` (`primary` by
 default). The OAuth grant should be for the personal account that owns that
-Calendar and include read-only Google Calendar access. Calendar questions with
-no date return the remainder of today in the Calendar's timezone. Bud also
-accepts `today`, `tomorrow`, named dates, inclusive date ranges, and explicit
-IANA timezones such as `America/Los_Angeles`.
+Calendar and include read-only Google Calendar access.
+
+Calendar questions are interpreted by the model, which calls the
+provider-neutral `list_calendar_events` tool with a semantic period. The model
+can resolve conversational requests such as “Thursday”; it asks for
+clarification when the date is materially ambiguous. The Calendar domain then
+deterministically validates exact dates, inclusive ranges (up to 31 days), and
+IANA timezones before the Google adapter runs.
+
+The tool result always includes the resolved date/range and timezone. Calendar
+reads are re-authorized inside the tool as well as at Telegram ingress.
 
 ## Verification
 

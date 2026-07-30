@@ -1,35 +1,35 @@
 import type { BudConfig } from "./config.js";
 import { createGoogleTokenProvider } from "./google-token-provider.js";
 import {
-  PersonalOrganizerError,
-  type Event,
-  type EventRange,
-  type PersonalOrganizer,
-} from "./personal-organizer.js";
+  CalendarAdapterError,
+  type CalendarAdapter,
+  type CalendarEvent,
+  type CalendarEventRange,
+} from "./calendar.js";
 import type { TokenProvider } from "./token-provider.js";
 
-interface GooglePersonalOrganizerOptions {
+interface GoogleCalendarOptions {
   calendarId: string;
   fetch?: typeof fetch;
   tokenProvider: TokenProvider;
 }
 
-function failureForStatus(status: number, payload?: unknown): PersonalOrganizerError {
-  if (status === 401) return new PersonalOrganizerError("authentication-expired");
+function failureForStatus(status: number, payload?: unknown): CalendarAdapterError {
+  if (status === 401) return new CalendarAdapterError("authentication_expired");
   if (status === 403) {
     const reasons = JSON.stringify(payload);
     if (/rateLimitExceeded|userRateLimitExceeded|quotaExceeded/i.test(reasons)) {
-      return new PersonalOrganizerError("rate-limited");
+      return new CalendarAdapterError("rate_limited");
     }
-    return new PersonalOrganizerError("access-revoked");
+    return new CalendarAdapterError("access_revoked");
   }
-  if (status === 429) return new PersonalOrganizerError("rate-limited");
-  return new PersonalOrganizerError("unavailable");
+  if (status === 429) return new CalendarAdapterError("rate_limited");
+  return new CalendarAdapterError("unavailable");
 }
 
-export function createGooglePersonalOrganizer(
-  options: GooglePersonalOrganizerOptions,
-): PersonalOrganizer {
+export function createGoogleCalendarAdapter(
+  options: GoogleCalendarOptions,
+): CalendarAdapter {
   const request = options.fetch ?? fetch;
 
   async function googleGet(path: string): Promise<unknown> {
@@ -40,7 +40,7 @@ export function createGooglePersonalOrganizer(
         headers: { authorization: `Bearer ${token}` },
       });
     } catch {
-      throw new PersonalOrganizerError("unavailable");
+      throw new CalendarAdapterError("unavailable");
     }
     const payload = await response.json().catch(() => undefined);
     if (!response.ok) throw failureForStatus(response.status, payload);
@@ -51,10 +51,10 @@ export function createGooglePersonalOrganizer(
   return {
     async getDefaultTimeZone() {
       const payload = await googleGet(calendarPath) as { timeZone?: string };
-      if (!payload.timeZone) throw new PersonalOrganizerError("unavailable");
+      if (!payload.timeZone) throw new CalendarAdapterError("unavailable");
       return payload.timeZone;
     },
-    async listEvents(range: EventRange) {
+    async listEvents(range: CalendarEventRange) {
       const query = new URLSearchParams({
         orderBy: "startTime",
         singleEvents: "true",
@@ -62,7 +62,7 @@ export function createGooglePersonalOrganizer(
         timeMin: range.start,
         timeZone: range.timeZone,
       });
-      const events: Event[] = [];
+      const events: CalendarEvent[] = [];
       let pageToken: string | undefined;
       do {
         if (pageToken) query.set("pageToken", pageToken);
@@ -75,11 +75,16 @@ export function createGooglePersonalOrganizer(
         }>;
           nextPageToken?: string;
         };
-        events.push(...(payload.items ?? []).flatMap<Event>((item) => {
-          const start = item.start?.dateTime ?? item.start?.date;
-          const end = item.end?.dateTime ?? item.end?.date;
-          if (item.status === "cancelled" || !start || !end) return [];
-          return [{ end, start, title: item.summary ?? "Untitled event" }];
+        events.push(...(payload.items ?? []).flatMap<CalendarEvent>((item) => {
+          if (item.status === "cancelled") return [];
+          const title = item.summary ?? "Untitled event";
+          if (item.start?.dateTime && item.end?.dateTime) {
+            return [{ kind: "timed", end: item.end.dateTime, start: item.start.dateTime, title }];
+          }
+          if (item.start?.date && item.end?.date) {
+            return [{ kind: "all-day", endDate: item.end.date, startDate: item.start.date, title }];
+          }
+          return [];
         }));
         pageToken = payload.nextPageToken;
       } while (pageToken);
@@ -88,11 +93,11 @@ export function createGooglePersonalOrganizer(
   };
 }
 
-export function createConfiguredGoogleOrganizer(
+export function createConfiguredGoogleCalendarAdapter(
   config: BudConfig,
   googleFetch?: typeof fetch,
-): PersonalOrganizer {
-  return createGooglePersonalOrganizer({
+): CalendarAdapter {
+  return createGoogleCalendarAdapter({
     calendarId: config.googleCalendarId,
     ...(googleFetch ? { fetch: googleFetch } : {}),
     tokenProvider: createGoogleTokenProvider({

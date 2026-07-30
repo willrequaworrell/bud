@@ -1,4 +1,4 @@
-import { PersonalOrganizerError } from "./personal-organizer.js";
+import { CalendarAdapterError } from "./calendar.js";
 import type { TokenProvider } from "./token-provider.js";
 
 interface GoogleTokenProviderOptions {
@@ -31,14 +31,14 @@ export function createGoogleTokenProvider(
           method: "POST",
         });
       } catch {
-        throw new PersonalOrganizerError("unavailable");
+        throw new CalendarAdapterError("unavailable");
       }
       if (!response.ok) {
-        throw new PersonalOrganizerError(
+        throw new CalendarAdapterError(
           response.status === 400 || response.status === 401
-            ? "access-revoked"
+            ? "access_revoked"
             : response.status === 429
-              ? "rate-limited"
+              ? "rate_limited"
               : "unavailable",
         );
       }
@@ -47,7 +47,7 @@ export function createGoogleTokenProvider(
         expires_in?: number;
       };
       if (!payload.access_token) {
-        throw new PersonalOrganizerError("authentication-expired");
+        throw new CalendarAdapterError("authentication_expired");
       }
       cached = {
         expiresAt: now() + (payload.expires_in ?? 3600) * 1000,

@@ -8,22 +8,9 @@ import {
 import type { RouteHandlerArgs, Session } from "eve/channels";
 
 import type { BudConfig } from "./config.js";
-import { answerAgendaRequest } from "./agenda.js";
-import {
-  PersonalOrganizerError,
-  type PersonalOrganizer,
-  type PersonalOrganizerFailure,
-} from "./personal-organizer.js";
 import { isOwnerPrivateText } from "./telegram-policy.js";
 
 const RESET_REQUEST_PREFIX = "bud:conversation-reset:";
-
-const ORGANIZER_FAILURE_MESSAGES: Record<PersonalOrganizerFailure, string> = {
-  "access-revoked": "Google Calendar access was revoked. Please reconnect it.",
-  "authentication-expired": "Google Calendar authentication expired. Please reconnect it.",
-  "rate-limited": "Google Calendar is busy right now. Please try again shortly.",
-  unavailable: "Google Calendar is unavailable right now. Please try again later.",
-};
 
 interface ResettableTelegramChannel {
   adapter: {
@@ -84,10 +71,6 @@ function ownerAuth(message: TelegramMessage) {
 export function createBudTelegramChannel(
   channelConfig: BudConfig,
   telegramFetch?: typeof fetch,
-  dependencies: {
-    now?: () => Date;
-    organizer?: PersonalOrganizer;
-  } = {},
 ): TelegramChannel {
   const channel = telegramChannel({
     ...(telegramFetch ? { api: { fetch: telegramFetch } } : {}),
@@ -98,26 +81,6 @@ export function createBudTelegramChannel(
     async onMessage(ctx, message) {
       if (!isOwnerPrivateText(message, channelConfig.ownerId)) {
         return null;
-      }
-
-      if (dependencies.organizer) {
-        let answer: string | undefined;
-        try {
-          answer = await answerAgendaRequest(
-            { text: message.text! },
-            dependencies.organizer,
-            dependencies.now?.() ?? new Date(),
-          );
-        } catch (error) {
-          const reason = error instanceof PersonalOrganizerError
-            ? error.reason
-            : "unavailable";
-          answer = ORGANIZER_FAILURE_MESSAGES[reason];
-        }
-        if (answer !== undefined) {
-          await ctx.telegram.sendMessage(answer);
-          return null;
-        }
       }
 
       await ctx.telegram.startTyping();
