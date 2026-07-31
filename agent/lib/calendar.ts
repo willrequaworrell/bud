@@ -8,7 +8,37 @@ export type CalendarEvent =
   | { kind: "all-day"; endDate: string; source: string; startDate: string; title: string }
   | { kind: "timed"; end: string; source: string; start: string; title: string };
 
+type EventProposalDetails =
+  | {
+      description: string | null;
+      endLocal: string;
+      kind: "timed";
+      location: string | null;
+      startLocal: string;
+      timeZone: string;
+      title: string;
+      warning: "Starts in the past" | null;
+    }
+  | {
+      description: string | null;
+      kind: "all-day";
+      location: string | null;
+      startDate: string;
+      throughDate: string;
+      timeZone: string;
+      title: string;
+      warning: "Starts in the past" | null;
+    };
+
+export type EventProposal = EventProposalDetails & { proposalId: string };
+
+export type CalendarEventWrite = (
+  | Omit<Extract<EventProposalDetails, { kind: "timed" }>, "warning">
+  | Omit<Extract<EventProposalDetails, { kind: "all-day" }>, "warning">
+) & { idempotencyKey: string };
+
 export interface CalendarAdapter {
+  createEvent?(event: CalendarEventWrite): Promise<{ eventId: string }>;
   getDefaultTimeZone(): Promise<string>;
   listEvents(range: CalendarEventRange): Promise<readonly CalendarEvent[]>;
 }
@@ -93,6 +123,49 @@ function formatDate(date: LocalDate): string {
   return `${String(date.year).padStart(4, "0")}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}`;
 }
 
+function addMinutes(value: string, minutes: number): string | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return undefined;
+  const [year, month, day, hour, minute] = match.slice(1).map(Number);
+  const date = new Date(Date.UTC(year!, month! - 1, day!, hour!, minute! + minutes));
+  if (Number.isNaN(date.getTime())) return undefined;
+  return date.toISOString().slice(0, 16);
+}
+
+function localDateTimeInstant(value: string, timeZone: string): Date | "ambiguous" | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return undefined;
+  const [year, month, day, hour, minute] = match.slice(1).map(Number);
+  if (!parseDate(`${match[1]}-${match[2]}-${match[3]}`) || hour! > 23 || minute! > 59) return undefined;
+  const target = Date.UTC(year!, month! - 1, day!, hour!, minute!);
+  const wallClockValue = (instant: Date) => {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      day: "2-digit", hour: "2-digit", hour12: false, minute: "2-digit",
+      month: "2-digit", timeZone, year: "numeric",
+    }).formatToParts(instant);
+    const number = (type: Intl.DateTimeFormatPartTypes) =>
+      Number(parts.find((part) => part.type === type)?.value.replace("24", "0"));
+    return Date.UTC(number("year"), number("month") - 1, number("day"), number("hour"), number("minute"));
+  };
+  let candidate = new Date(target);
+  for (let iteration = 0; iteration < 4; iteration += 1) {
+    const actual = wallClockValue(candidate);
+    const difference = target - actual;
+    if (difference === 0) {
+      const hour = 60 * 60 * 1000;
+      if (wallClockValue(new Date(candidate.getTime() - hour)) === target ||
+          wallClockValue(new Date(candidate.getTime() + hour)) === target) return "ambiguous";
+      return candidate;
+    }
+    candidate = new Date(candidate.getTime() + difference);
+  }
+  return undefined;
+}
+
+function proposalIdentity(proposal: EventProposalDetails): string {
+  return createHash("sha256").update(JSON.stringify(proposal)).digest("hex");
+}
+
 function zonedMidnight(target: LocalDate, timeZone: string): Date {
   let candidate = new Date(Date.UTC(target.year, target.month - 1, target.day));
   for (let iteration = 0; iteration < 3; iteration += 1) {
@@ -143,6 +216,67 @@ export function createCalendar(
   const maxRangeDays = options.maxRangeDays ?? 31;
 
   return {
+    async prepareEvent(request:
+      | { kind: "timed"; title: string; startLocal: string; endLocal?: string | undefined; timeZone?: string | undefined; location?: string | undefined; description?: string | undefined }
+      | { kind: "all-day"; title: string; startDate: string; throughDate?: string | undefined; timeZone?: string | undefined; location?: string | undefined; description?: string | undefined }
+    ) {
+      const title = request.title.trim();
+      if (!title) return { status: "error" as const, reason: "title_required" as const };
+      let timeZone: string;
+      try {
+        timeZone = request.timeZone ?? await adapter.getDefaultTimeZone();
+      } catch (error) {
+        return { status: "error" as const, reason: error instanceof CalendarAdapterError ? error.reason : "unavailable" as const };
+      }
+      if (!isTimeZone(timeZone)) return { status: "error" as const, reason: "invalid_time_zone" as const };
+      const common = {
+        description: request.description?.trim() || null,
+        location: request.location?.trim() || null,
+        timeZone,
+        title,
+      };
+      let proposal: EventProposalDetails;
+      if (request.kind === "timed") {
+        const endLocal = request.endLocal ?? addMinutes(request.startLocal, 30);
+        if (!endLocal) return { status: "error" as const, reason: "invalid_time" as const };
+        const start = localDateTimeInstant(request.startLocal, timeZone);
+        const end = localDateTimeInstant(endLocal, timeZone);
+        if (start === "ambiguous" || end === "ambiguous") {
+          return { status: "error" as const, reason: "ambiguous_time" as const };
+        }
+        if (!start || !end || end <= start) return { status: "error" as const, reason: "invalid_time" as const };
+        proposal = { ...common, kind: "timed", startLocal: request.startLocal, endLocal,
+          warning: start < now() ? "Starts in the past" : null };
+      } else {
+        const start = parseDate(request.startDate);
+        const through = parseDate(request.throughDate ?? request.startDate);
+        if (!start || !through || inclusiveDays(start, through) < 1) {
+          return { status: "error" as const, reason: "invalid_date" as const };
+        }
+        proposal = { ...common, kind: "all-day", startDate: request.startDate,
+          throughDate: request.throughDate ?? request.startDate,
+          warning: zonedMidnight(start, timeZone) < now() ? "Starts in the past" : null };
+      }
+      return { status: "ok" as const, proposal: { ...proposal, proposalId: proposalIdentity(proposal) } as EventProposal };
+    },
+    async createEvent(proposal: EventProposal, idempotencyKey: string) {
+      const { proposalId, warning, ...event } = proposal;
+      if (proposalIdentity({ ...event, warning } as EventProposalDetails) !== proposalId) {
+        return { status: "error" as const, reason: "proposal_changed" as const };
+      }
+      if (!adapter.createEvent) {
+        return { status: "error" as const, reason: "unavailable" as const };
+      }
+      try {
+        const created = await adapter.createEvent({ ...event, idempotencyKey });
+        return { status: "ok" as const, eventId: created.eventId };
+      } catch (error) {
+        return {
+          status: "error" as const,
+          reason: error instanceof CalendarAdapterError ? error.reason : "unavailable" as const,
+        };
+      }
+    },
     async listEvents(request: { period: CalendarPeriod; timeZone?: string }) {
       let timeZone: string;
       try {
@@ -228,3 +362,4 @@ export function createCalendar(
     },
   };
 }
+import { createHash } from "node:crypto";

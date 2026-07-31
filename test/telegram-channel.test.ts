@@ -19,7 +19,11 @@ function update(senderId: number, text: string, chatType: "private" | "group" = 
     from: { id: senderId, is_bot: false, first_name: "Sender" }, text } };
 }
 
-async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
+async function deliverWithSessionState(
+  activeSession: boolean,
+  pendingProposal: boolean | "resolved",
+  ...updates: unknown[]
+) {
   const outbound: string[] = [];
   const model = vi.fn(async (message: string) => `Model: ${message}`);
   const telegramFetch = vi.fn<typeof fetch>(async (_request, init) => {
@@ -50,6 +54,26 @@ async function deliverWithActiveSession(activeSession: boolean, ...updates: unkn
     }),
     waitUntil(task: Promise<unknown>) { tasks.push(task); },
     async resolveActiveSession() { return activeSession ? { sessionId: "session" } : undefined; },
+    getSession() {
+      return { getEventStream: async () => new ReadableStream({ start(controller) {
+        if (pendingProposal) {
+          controller.enqueue({ type: "input.requested", data: { requests: [{
+              action: { kind: "tool-call", toolName: "create_calendar_event", callId: "call", input: {} },
+              requestId: "approval", prompt: "Approve?",
+            }], sequence: 0, stepIndex: 0, turnId: "turn" } });
+        }
+        if (pendingProposal === "resolved") {
+          controller.enqueue({ type: "action.result", data: {
+            result: { kind: "tool-result", callId: "call", toolName: "create_calendar_event", output: {} },
+            sequence: 0, stepIndex: 0, turnId: "turn", status: "completed",
+          } });
+        }
+        controller.enqueue({ type: "session.waiting", data: {
+          continuationToken: "token", wait: "next-user-message",
+        } });
+        controller.close();
+      } }) } as Session;
+    },
   } as unknown as RouteHandlerArgs<TelegramChannelState>;
   for (const body of updates) {
     await route.handler(new Request("https://bud.test/eve/v1/telegram", {
@@ -60,6 +84,10 @@ async function deliverWithActiveSession(activeSession: boolean, ...updates: unkn
     await Promise.all(tasks.splice(0));
   }
   return { model, outbound };
+}
+
+async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
+  return deliverWithSessionState(activeSession, activeSession, ...updates);
 }
 
 async function deliver(...updates: unknown[]) {
@@ -97,5 +125,25 @@ describe("Telegram Channel", () => {
     const result = await deliverWithActiveSession(true, update(42, "/reset"));
     expect(result.model).not.toHaveBeenCalled();
     expect(result.outbound).toEqual(["Conversation reset."]);
+  });
+
+  it("refuses unrelated text while a Proposal approval is pending", async () => {
+    const result = await deliverWithActiveSession(true, update(42, "What is the weather?"));
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([
+      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+    ]);
+  });
+
+  it("does not label an ordinary active turn as a pending Proposal", async () => {
+    const result = await deliverWithSessionState(true, false, update(42, "One more detail"));
+    expect(result.model).toHaveBeenCalledWith("One more detail");
+    expect(result.outbound).toEqual(["Model: One more detail"]);
+  });
+
+  it("does not treat a resolved Event approval in history as pending", async () => {
+    const result = await deliverWithSessionState(true, "resolved", update(42, "Thanks"));
+    expect(result.model).toHaveBeenCalledWith("Thanks");
+    expect(result.outbound).toEqual(["Model: Thanks"]);
   });
 });

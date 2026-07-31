@@ -2,6 +2,74 @@ import { expect, it, vi } from "vitest";
 
 import { createGoogleCalendarAdapter } from "../agent/lib/google-calendar.js";
 
+it("creates an all-day Event on only the configured Write Calendar", async () => {
+  const googleFetch = vi.fn<typeof fetch>(async () => Response.json({ id: "created-id" }));
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write@example.com", readCalendarIds: ["read@example.com"],
+    fetch: googleFetch, tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  expect(await adapter.createEvent!({
+    kind: "all-day", title: "Beach trip", startDate: "2026-08-07",
+    throughDate: "2026-08-09", timeZone: "America/New_York",
+    location: "Cape May", description: null, idempotencyKey: "call-123",
+  })).toEqual({ eventId: "created-id" });
+
+  const [url, init] = googleFetch.mock.calls[0]!;
+  expect(String(url)).toBe("https://www.googleapis.com/calendar/v3/calendars/write%40example.com/events");
+  expect(init?.method).toBe("POST");
+  expect(JSON.parse(String(init?.body))).toEqual({
+    id: expect.stringMatching(/^bud[0-9a-f]{64}$/),
+    summary: "Beach trip", location: "Cape May",
+    start: { date: "2026-08-07" }, end: { date: "2026-08-10" },
+    reminders: { useDefault: true },
+    extendedProperties: { private: { budProposalHash: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+  });
+});
+
+it("treats a retried identical Google Event insert as success", async () => {
+  let insertedBody: unknown;
+  const googleFetch = vi.fn<typeof fetch>(async (_input, init) => {
+    if (init?.method === "POST") {
+      insertedBody = JSON.parse(String(init.body));
+      return new Response(JSON.stringify({ error: { code: 409 } }), { status: 409 });
+    }
+    return Response.json(insertedBody);
+  });
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  await expect(adapter.createEvent!({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+    endLocal: "2026-08-03T09:30", timeZone: "America/New_York",
+    location: null, description: null, idempotencyKey: "same-call",
+  })).resolves.toEqual({ eventId: expect.stringMatching(/^bud/) });
+  expect(googleFetch).toHaveBeenCalledTimes(2);
+});
+
+it("rejects a retry when the existing Google Event was edited", async () => {
+  let insertedBody: any;
+  const googleFetch = vi.fn<typeof fetch>(async (_input, init) => {
+    if (init?.method === "POST") {
+      insertedBody = JSON.parse(String(init.body));
+      return new Response(null, { status: 409 });
+    }
+    return Response.json({ ...insertedBody, summary: "Edited elsewhere" });
+  });
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  await expect(adapter.createEvent!({
+    kind: "all-day", title: "Original", startDate: "2026-08-07",
+    throughDate: "2026-08-07", timeZone: "America/New_York",
+    location: null, description: null, idempotencyKey: "same-call",
+  })).rejects.toMatchObject({ reason: "unavailable" });
+});
+
 it("reads and labels Events from every configured Read Calendar", async () => {
   const requests: string[] = [];
   const googleFetch = vi.fn<typeof fetch>(async (input) => {

@@ -11,6 +11,9 @@ import type { BudConfig } from "./config.js";
 import { isOwnerPrivateText } from "./telegram-policy.js";
 
 const RESET_REQUEST_PREFIX = "bud:conversation-reset:";
+const REFUSED_REQUEST_PREFIX = "bud:pending-proposal-refused:";
+const PENDING_PROPOSAL_MESSAGE =
+  "Please approve or deny the pending proposal before starting another request. You can also use /reset.";
 
 interface ResettableTelegramChannel {
   adapter: {
@@ -39,10 +42,10 @@ interface ResetPayload {
   [key: string]: unknown;
 }
 
-function completedResetSession(resetRequestId: string): Session {
+function completedSyntheticSession(requestId: string): Session {
   return {
-    id: resetRequestId,
-    continuationToken: resetRequestId,
+    id: requestId,
+    continuationToken: requestId,
     async cancel() {
       return { status: "no_active_turn" };
     },
@@ -50,6 +53,31 @@ function completedResetSession(resetRequestId: string): Session {
       return new ReadableStream();
     },
   };
+}
+
+async function hasPendingEventProposal(args: RouteHandlerArgs<TelegramChannelState>, sessionId: string) {
+  const stream = await args.getSession(sessionId).getEventStream({ startIndex: -20 });
+  const reader = stream.getReader();
+  const pendingCallIds = new Set<string>();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return pendingCallIds.size > 0;
+      if (value.type === "input.requested") {
+        for (const request of value.data.requests) {
+          if (request.action.toolName.endsWith("create_calendar_event")) {
+            pendingCallIds.add(request.action.callId);
+          }
+        }
+      } else if (value.type === "action.result") {
+        pendingCallIds.delete(value.data.result.callId);
+      } else if (value.type === "session.waiting") {
+        return pendingCallIds.size > 0;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 function ownerAuth(message: TelegramMessage) {
@@ -112,7 +140,22 @@ export function createBudTelegramChannel(
           typeof input === "object" && !Array.isArray(input) && "message" in input
             ? input.message
             : input;
-        if (message !== "/reset") return args.send(input, options);
+        if (message !== "/reset") {
+          if (typeof message !== "string") return args.send(input, options);
+          const active = await args.resolveActiveSession({
+            continuationToken: options.continuationToken,
+          });
+          if (!active || !await hasPendingEventProposal(args, active.sessionId)) {
+            return args.send(input, options);
+          }
+          await sendTelegramMessage({
+            ...(telegramFetch ? { fetch: telegramFetch } : {}),
+            body: { text: PENDING_PROPOSAL_MESSAGE },
+            chatId: options.state.chatId!,
+            credentials: { botToken: channelConfig.telegramBotToken },
+          });
+          return completedSyntheticSession(`${REFUSED_REQUEST_PREFIX}${crypto.randomUUID()}`);
+        }
 
         const active = await args.resolveActiveSession({
           continuationToken: options.continuationToken,
@@ -125,7 +168,7 @@ export function createBudTelegramChannel(
             chatId: options.state.chatId!,
             credentials: { botToken: channelConfig.telegramBotToken },
           });
-          return completedResetSession(resetRequestId);
+          return completedSyntheticSession(resetRequestId);
         }
 
         return args.send(

@@ -34,6 +34,14 @@ _Avoid_: Primary calendar, default calendar
 A timed or all-day commitment belonging to one Calendar Source.
 _Avoid_: Appointment, meeting
 
+**Proposal**:
+An immutable, fully rendered intention to perform exactly one external write. Approval applies only to its exact fields.
+_Avoid_: Draft, confirmation
+
+**Event Proposal**:
+A Proposal for one non-recurring timed or all-day Event on the Write Calendar.
+_Avoid_: Calendar draft
+
 **Tasks**:
 The domain of outstanding items the Owner intends to complete, separate from Calendar Events.
 _Avoid_: To-dos calendar

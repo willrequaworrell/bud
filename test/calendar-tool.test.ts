@@ -1,10 +1,14 @@
 import type { ToolContext } from "eve/tools";
 import { expect, it, vi } from "vitest";
 
-import { createListCalendarEventsTool } from "../agent/lib/calendar-tool.js";
+import {
+  createCreateCalendarEventTool,
+  createListCalendarEventsTool,
+  createPrepareCalendarEventTool,
+} from "../agent/lib/calendar-tool.js";
 
 function context(principalId: string): ToolContext {
-  return { session: { auth: { current: { principalId } } } } as ToolContext;
+  return { callId: "call-123", session: { auth: { current: { principalId } } } } as ToolContext;
 }
 
 it("lets the authenticated Owner read sourced Calendar events", async () => {
@@ -34,6 +38,46 @@ it("lets the authenticated Owner read sourced Calendar events", async () => {
     },
   });
   expect(listEvents).toHaveBeenCalledOnce();
+});
+
+it("prepares without approval and creates only through per-call approval", async () => {
+  const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
+  const adapter = {
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { return []; }, createEvent,
+  };
+  const prepare = createPrepareCalendarEventTool({ adapter, ownerId: "42",
+    now: () => new Date("2026-07-31T15:00:00Z") });
+  const create = createCreateCalendarEventTool({ adapter, ownerId: "42" });
+  const prepared = await prepare.execute({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+  }, context("telegram:42"));
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  expect(prepare.approval).toBeUndefined();
+  expect(await create.approval!({} as never)).toBe("user-approval");
+  expect(await create.approval!({} as never)).toBe("user-approval");
+  expect(createEvent).not.toHaveBeenCalled();
+  expect(await create.execute({ proposal: prepared.proposal }, context("telegram:42")))
+    .toEqual({ status: "ok", eventId: "event-1" });
+  expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "call-123" }));
+});
+
+it("refuses Calendar Event creation when the executing caller is not the Owner", async () => {
+  const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
+  const create = createCreateCalendarEventTool({
+    adapter: { async getDefaultTimeZone() { return "UTC"; }, async listEvents() { return []; }, createEvent },
+    ownerId: "42",
+  });
+  const proposal = {
+    kind: "all-day" as const, proposalId: "0".repeat(64), title: "Private",
+    startDate: "2026-08-07", throughDate: "2026-08-07", timeZone: "UTC",
+    location: null, description: null, warning: null,
+  };
+
+  expect(await create.execute({ proposal }, context("telegram:99")))
+    .toEqual({ status: "error", reason: "forbidden" });
+  expect(createEvent).not.toHaveBeenCalled();
 });
 
 it("re-enforces Owner authorization inside the Calendar tool", async () => {

@@ -125,3 +125,93 @@ it("orders Events across Calendar sources while preserving matching Events", asy
     { title: "Standup", source: "Work" },
   ] });
 });
+
+it("prepares a complete 30-minute timed Event Proposal without writing", async () => {
+  const createEvent = vi.fn();
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { return []; },
+    createEvent,
+  }, { now: () => new Date("2026-07-31T15:00:00.000Z") });
+
+  const result = await calendar.prepareEvent({
+    kind: "timed",
+    title: "Dentist",
+    startLocal: "2026-08-03T09:00",
+  });
+
+  expect(result).toEqual({
+    status: "ok",
+    proposal: {
+      kind: "timed",
+      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
+      title: "Dentist",
+      startLocal: "2026-08-03T09:00",
+      endLocal: "2026-08-03T09:30",
+      timeZone: "America/New_York",
+      location: null,
+      description: null,
+      warning: null,
+    },
+  });
+  expect(createEvent).not.toHaveBeenCalled();
+});
+
+it("creates exactly an unchanged multi-day Event Proposal with a retry key", async () => {
+  const createEvent = vi.fn(async () => ({ eventId: "google-event" }));
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { return []; }, createEvent,
+  }, { now: () => new Date("2026-07-31T15:00:00.000Z") });
+  const prepared = await calendar.prepareEvent({
+    kind: "all-day", title: "Beach trip", startDate: "2026-08-07",
+    throughDate: "2026-08-09", location: "Cape May",
+  });
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+    status: "ok", eventId: "google-event",
+  });
+  expect(createEvent).toHaveBeenCalledWith({
+    kind: "all-day", title: "Beach trip", startDate: "2026-08-07",
+    throughDate: "2026-08-09", timeZone: "America/New_York",
+    location: "Cape May", description: null, idempotencyKey: "call-123",
+  });
+
+  await expect(calendar.createEvent(
+    { ...prepared.proposal, title: "Changed after approval" }, "call-123",
+  )).resolves.toEqual({ status: "error", reason: "proposal_changed" });
+});
+
+it("warns before preparing an Event whose start is in the past", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { return []; },
+  }, { now: () => new Date("2026-08-10T15:00:00.000Z") });
+
+  expect(await calendar.prepareEvent({
+    kind: "all-day", title: "Backfill", startDate: "2026-08-09",
+  })).toMatchObject({ status: "ok", proposal: { warning: "Starts in the past" } });
+});
+
+it("rejects a timed Event in a nonexistent DST wall-clock time", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { return []; },
+  });
+
+  expect(await calendar.prepareEvent({
+    kind: "timed", title: "Impossible", startLocal: "2026-03-08T02:30",
+  })).toEqual({ status: "error", reason: "invalid_time" });
+});
+
+it("rejects an ambiguous fall-back wall-clock time for clarification", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { return []; },
+  });
+
+  expect(await calendar.prepareEvent({
+    kind: "timed", title: "Ambiguous", startLocal: "2026-11-01T01:30",
+  })).toEqual({ status: "error", reason: "ambiguous_time" });
+});

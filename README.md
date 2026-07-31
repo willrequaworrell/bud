@@ -46,6 +46,13 @@ Vercel environment configuration. The OAuth grant must be able to read every
 listed Calendar. Bud uses Google's display names in model-visible Event results
 and never exposes the configured IDs.
 
+To create Events, authorize the refresh token with read access for the Read Set
+and `https://www.googleapis.com/auth/calendar.events.owned`. This limits writes
+to Calendars owned by the Google account; Bud further restricts creation to
+`GOOGLE_CALENDAR_ID`. Expanding OAuth scopes requires generating a new offline
+refresh token, updating `GOOGLE_OAUTH_REFRESH_TOKEN` locally and in Vercel, and
+redeploying.
+
 Calendar questions are interpreted by the model, which calls the
 provider-neutral `list_calendar_events` tool with a semantic period. The model
 can resolve conversational requests such as “Thursday”; it asks for
@@ -56,6 +63,17 @@ source fails, Bud returns a safe error instead of presenting an incomplete agend
 
 The tool result always includes the resolved date/range and timezone. Calendar
 reads are re-authorized inside the tool as well as at Telegram ingress.
+
+## Calendar creation
+
+Bud prepares one immutable timed or all-day Event Proposal before requesting a
+write. A missing timed duration defaults to 30 minutes. Google Calendar defaults
+supply reminders. Attendees, conferencing, recurrence, custom reminders, and
+conflict detection are not part of this slice.
+
+Telegram displays Eve's native approval buttons. Approve writes exactly the
+Proposal to the configured Write Calendar; Deny writes nothing. While approval
+is pending, resolve it or use `/reset` before starting another request.
 
 ## Verification
 
