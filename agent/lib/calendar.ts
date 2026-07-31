@@ -5,8 +5,8 @@ export interface CalendarEventRange {
 }
 
 export type CalendarEvent =
-  | { kind: "all-day"; endDate: string; startDate: string; title: string }
-  | { kind: "timed"; end: string; start: string; title: string };
+  | { kind: "all-day"; endDate: string; source: string; startDate: string; title: string }
+  | { kind: "timed"; end: string; source: string; start: string; title: string };
 
 export interface CalendarAdapter {
   getDefaultTimeZone(): Promise<string>;
@@ -116,6 +116,25 @@ function zonedMidnight(target: LocalDate, timeZone: string): Date {
   return new Date(candidate.getTime() - (hour * 60 + minute) * 60 * 1000);
 }
 
+function sortEvents(events: readonly CalendarEvent[], timeZone: string): CalendarEvent[] {
+  return [...events].sort((left, right) => {
+    const leftDate = left.kind === "all-day"
+      ? left.startDate
+      : formatDate(partsAt(new Date(left.start), timeZone));
+    const rightDate = right.kind === "all-day"
+      ? right.startDate
+      : formatDate(partsAt(new Date(right.start), timeZone));
+    const dateOrder = leftDate.localeCompare(rightDate);
+    if (dateOrder !== 0) return dateOrder;
+    if (left.kind !== right.kind) return left.kind === "all-day" ? -1 : 1;
+    if (left.kind === "timed" && right.kind === "timed") {
+      const timeOrder = new Date(left.start).getTime() - new Date(right.start).getTime();
+      if (timeOrder !== 0) return timeOrder;
+    }
+    return left.source.localeCompare(right.source) || left.title.localeCompare(right.title);
+  });
+}
+
 export function createCalendar(
   adapter: CalendarAdapter,
   options: { now?: () => Date; maxRangeDays?: number } = {},
@@ -199,7 +218,7 @@ export function createCalendar(
       }
       return {
         status: "ok" as const,
-        events,
+        events: sortEvents(events, timeZone),
         resolvedPeriod: {
           ...range,
           endDate: formatDate(endDate),

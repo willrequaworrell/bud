@@ -34,16 +34,25 @@ Configuration errors name invalid variables but never include their values.
 
 ## Calendar reads
 
-Bud reads one Calendar, configured by `GOOGLE_CALENDAR_ID` (`primary` by
-default). The OAuth grant should be for the personal account that owns that
-Calendar and include read-only Google Calendar access.
+Bud combines an explicit Read Set of up to 10 Calendars. Configure their IDs as
+a comma-separated `GOOGLE_CALENDAR_READ_IDS`; when omitted, it defaults to
+`GOOGLE_CALENDAR_ID`. The latter remains the independent Write Calendar and
+supplies Bud's default Calendar timezone. An explicitly configured Read Set does
+not automatically include the Write Calendar.
+
+Find a Calendar ID in Google Calendar under **Settings → Settings for my
+calendars → Integrate calendar → Calendar ID**. Add the same values to local and
+Vercel environment configuration. The OAuth grant must be able to read every
+listed Calendar. Bud uses Google's display names in model-visible Event results
+and never exposes the configured IDs.
 
 Calendar questions are interpreted by the model, which calls the
 provider-neutral `list_calendar_events` tool with a semantic period. The model
 can resolve conversational requests such as “Thursday”; it asks for
 clarification when the date is materially ambiguous. The Calendar domain then
 deterministically validates exact dates, inclusive ranges (up to 31 days), and
-IANA timezones before the Google adapter runs.
+IANA timezones before the Google adapter reads every configured source. If any
+source fails, Bud returns a safe error instead of presenting an incomplete agenda.
 
 The tool result always includes the resolved date/range and timezone. Calendar
 reads are re-authorized inside the tool as well as at Telegram ingress.

@@ -1,20 +1,43 @@
-# Bud context
+# Bud
 
-Bud is a private, reactive Telegram assistant built on Eve. Telegram authenticates
-one configured Owner and passes authorized text to the model. The model interprets
-natural language and selects typed tools; channels do not duplicate that work
-with intent-specific parsers.
+Bud is a private, reactive personal assistant for one Owner. Its language keeps
+conversational intent separate from the Calendar and Tasks concepts that external
+providers implement.
 
-## Domain boundaries
+## Language
 
-- **Calendar** owns provider-neutral event reads, semantic periods, timezone/date
-  boundaries, range limits, and safe failures.
-- **Google Calendar adapter** translates Calendar requests and results to the
-  Google Calendar API. It does not interpret user language.
-- **Tasks** will be a separate domain when introduced.
-- **Agenda** is reserved for a future combined Calendar-and-Tasks view; it is not
-  a synonym for Calendar infrastructure.
+**Owner**:
+The single person authorized to converse with Bud and access connected personal data.
+_Avoid_: User, account
 
-The current product configures one Google Calendar. Provider-neutral domain APIs
-keep model-facing tools stable and constrain the model's decision space; they do
-not imply that multiple providers are currently aggregated.
+**Conversation**:
+The Owner’s durable exchange with Bud, including context needed for follow-ups and clarification.
+_Avoid_: Chat session, thread
+
+**Calendar**:
+The collection of Events Bud can read across its configured Calendar Sources.
+_Avoid_: Personal Organizer
+
+**Calendar Source**:
+One connected provider calendar with a human-readable source name. A Calendar Source may belong to the Read Set, serve as the Write Calendar, or both.
+_Avoid_: Container
+
+**Read Set**:
+The explicit set of Calendar Sources Bud combines when answering a general Calendar request.
+_Avoid_: All calendars, calendar list
+
+**Write Calendar**:
+The single Calendar Source that defines Bud’s default Calendar timezone and receives future Event creation.
+_Avoid_: Primary calendar, default calendar
+
+**Event**:
+A timed or all-day commitment belonging to one Calendar Source.
+_Avoid_: Appointment, meeting
+
+**Tasks**:
+The domain of outstanding items the Owner intends to complete, separate from Calendar Events.
+_Avoid_: To-dos calendar
+
+**Agenda**:
+A future combined view of Calendar Events and Tasks.
+_Avoid_: Calendar

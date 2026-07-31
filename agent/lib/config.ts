@@ -1,6 +1,7 @@
 export interface BudConfig {
   assistantName: string;
   googleCalendarId: string;
+  googleCalendarReadIds: readonly string[];
   googleOAuthClientId: string;
   googleOAuthClientSecret: string;
   googleOAuthRefreshToken: string;
@@ -20,6 +21,15 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   const googleOAuthClientId = environment.GOOGLE_OAUTH_CLIENT_ID?.trim();
   const googleOAuthClientSecret = environment.GOOGLE_OAUTH_CLIENT_SECRET?.trim();
   const googleOAuthRefreshToken = environment.GOOGLE_OAUTH_REFRESH_TOKEN?.trim();
+  const googleCalendarId = environment.GOOGLE_CALENDAR_ID?.trim() || "primary";
+  const googleCalendarReadIds = environment.GOOGLE_CALENDAR_READ_IDS === undefined
+    ? [googleCalendarId]
+    : [...new Set(
+      environment.GOOGLE_CALENDAR_READ_IDS
+        .split(",")
+        .map((calendarId) => calendarId.trim())
+        .filter(Boolean),
+    )];
   const ownerId = environment.TELEGRAM_OWNER_ID?.trim();
   const telegramBotToken = environment.TELEGRAM_BOT_TOKEN?.trim();
   const telegramWebhookSecret =
@@ -28,6 +38,12 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   if (!googleOAuthClientId) errors.push("GOOGLE_OAUTH_CLIENT_ID is required");
   if (!googleOAuthClientSecret) errors.push("GOOGLE_OAUTH_CLIENT_SECRET is required");
   if (!googleOAuthRefreshToken) errors.push("GOOGLE_OAUTH_REFRESH_TOKEN is required");
+  if (googleCalendarReadIds.length === 0) {
+    errors.push("GOOGLE_CALENDAR_READ_IDS must contain at least one calendar");
+  }
+  if (googleCalendarReadIds.length > 10) {
+    errors.push("GOOGLE_CALENDAR_READ_IDS supports at most 10 calendars");
+  }
   if (!ownerId || !/^[1-9]\d*$/.test(ownerId)) {
     errors.push("TELEGRAM_OWNER_ID must be a positive numeric Telegram user ID");
   }
@@ -45,7 +61,8 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   return {
     assistantName:
       environment.BUD_ASSISTANT_NAME?.trim() || DEFAULT_ASSISTANT_NAME,
-    googleCalendarId: environment.GOOGLE_CALENDAR_ID?.trim() || "primary",
+    googleCalendarId,
+    googleCalendarReadIds,
     googleOAuthClientId: googleOAuthClientId!,
     googleOAuthClientSecret: googleOAuthClientSecret!,
     googleOAuthRefreshToken: googleOAuthRefreshToken!,

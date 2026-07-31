@@ -7,6 +7,7 @@ import { createBudTelegramChannel } from "../agent/lib/telegram-channel.js";
 
 const config: BudConfig = {
   assistantName: "Bud", googleCalendarId: "primary", googleOAuthClientId: "client",
+  googleCalendarReadIds: ["primary"],
   googleOAuthClientSecret: "secret", googleOAuthRefreshToken: "refresh",
   modelId: "test/deterministic", ownerId: "42", telegramBotToken: "bot",
   telegramWebhookSecret: "webhook",

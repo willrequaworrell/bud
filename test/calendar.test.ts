@@ -11,6 +11,7 @@ it("reads an exact local date through the configured Calendar timezone", async (
     {
       kind: "timed" as const,
       end: "2026-07-30T14:15:00.000Z",
+      source: "Work",
       start: "2026-07-30T13:00:00.000Z",
       title: "Test event",
     },
@@ -40,6 +41,7 @@ it("reads an exact local date through the configured Calendar timezone", async (
       {
         kind: "timed",
         end: "2026-07-30T14:15:00.000Z",
+        source: "Work",
         start: "2026-07-30T13:00:00.000Z",
         title: "Test event",
       },
@@ -96,4 +98,30 @@ it("rejects Calendar ranges longer than 31 inclusive days", async () => {
     maxRangeDays: 31,
   });
   expect(adapter.listEvents).not.toHaveBeenCalled();
+});
+
+it("orders Events across Calendar sources while preserving matching Events", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() {
+      return [
+        { kind: "timed" as const, title: "Standup", source: "Work",
+          start: "2026-07-30T13:00:00.000Z", end: "2026-07-30T13:30:00.000Z" },
+        { kind: "all-day" as const, title: "Birthday", source: "Personal",
+          startDate: "2026-07-30", endDate: "2026-07-31" },
+        { kind: "timed" as const, title: "Standup", source: "Personal",
+          start: "2026-07-30T13:00:00.000Z", end: "2026-07-30T13:30:00.000Z" },
+      ];
+    },
+  }, { now: () => new Date("2026-07-29T15:00:00.000Z") });
+
+  const result = await calendar.listEvents({
+    period: { kind: "date", date: "2026-07-30" },
+  });
+
+  expect(result).toMatchObject({ status: "ok", events: [
+    { title: "Birthday", source: "Personal" },
+    { title: "Standup", source: "Personal" },
+    { title: "Standup", source: "Work" },
+  ] });
 });
