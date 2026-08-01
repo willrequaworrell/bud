@@ -149,9 +149,10 @@ it("prepares a complete 30-minute timed Event Proposal without writing", async (
       startLocal: "2026-08-03T09:00",
       endLocal: "2026-08-03T09:30",
       timeZone: "America/New_York",
+      conflictTimeZone: "America/New_York",
       location: null,
       description: null,
-      warning: null,
+      warnings: [],
     },
   });
   expect(createEvent).not.toHaveBeenCalled();
@@ -182,10 +183,11 @@ it("creates exactly an unchanged multi-day Event Proposal with a retry key", asy
   if (proposal.kind !== "all-day") throw new Error("expected all-day proposal");
   expect(await calendar.createEvent({
     proposalId: proposal.proposalId,
-    warning: proposal.warning,
+    warnings: proposal.warnings,
     title: proposal.title,
     kind: proposal.kind,
     timeZone: proposal.timeZone,
+    conflictTimeZone: proposal.conflictTimeZone,
     throughDate: proposal.throughDate,
     startDate: proposal.startDate,
     description: proposal.description,
@@ -205,7 +207,221 @@ it("warns before preparing an Event whose start is in the past", async () => {
 
   expect(await calendar.prepareEvent({
     kind: "all-day", title: "Backfill", startDate: "2026-08-09",
-  })).toMatchObject({ status: "ok", proposal: { warning: "Starts in the past" } });
+  })).toMatchObject({ status: "ok", proposal: { warnings: [
+    { kind: "starts-in-past", message: "Starts in the past" },
+  ] } });
+});
+
+it("prepares a conflict-free Event after checking its exact interval", async () => {
+  const listEvents = vi.fn(async () => []);
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    listEvents,
+  }, { now: () => new Date("2026-07-31T15:00:00.000Z") });
+
+  const result = await calendar.prepareEvent({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+    endLocal: "2026-08-03T09:30",
+  });
+
+  expect(listEvents).toHaveBeenCalledWith({
+    start: "2026-08-03T13:00:00.000Z",
+    end: "2026-08-03T13:30:00.000Z",
+    timeZone: "America/New_York",
+  });
+  expect(result).toMatchObject({ status: "ok", proposal: { warnings: [] } });
+});
+
+it("warns about named timed Events that overlap the proposed interval", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() {
+      return [{ kind: "timed" as const, title: "Team sync", source: "Work",
+        start: "2026-08-03T13:15:00.000Z", end: "2026-08-03T14:00:00.000Z" }];
+    },
+  }, { now: () => new Date("2026-07-31T15:00:00.000Z") });
+
+  expect(await calendar.prepareEvent({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+    endLocal: "2026-08-03T09:30",
+  })).toMatchObject({
+    status: "ok",
+    proposal: { warnings: [{
+      kind: "overlap", message: "Overlaps Team sync (Work)",
+      conflict: { kind: "timed", title: "Team sync", source: "Work",
+        start: "2026-08-03T13:15:00.000Z", end: "2026-08-03T14:00:00.000Z" },
+    }] },
+  });
+});
+
+it("warns about all-day Events overlapping a timed proposal in the Write Calendar timezone", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() {
+      return [{ kind: "all-day" as const, title: "Vacation", source: "Personal",
+        startDate: "2026-08-03", endDate: "2026-08-04" }];
+    },
+  }, { now: () => new Date("2026-07-31T15:00:00.000Z") });
+
+  expect(await calendar.prepareEvent({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+  })).toMatchObject({
+    status: "ok",
+    proposal: { warnings: [{
+      kind: "overlap", message: "Overlaps Vacation (Personal)",
+      conflict: { kind: "all-day", title: "Vacation", source: "Personal",
+        startDate: "2026-08-03", endDate: "2026-08-04" },
+    }] },
+  });
+});
+
+it("does not present a Proposal when the conflict check fails", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { throw new CalendarAdapterError("rate_limited"); },
+  });
+
+  expect(await calendar.prepareEvent({
+    kind: "all-day", title: "Vacation", startDate: "2026-08-03",
+  })).toEqual({ status: "error", reason: "rate_limited" });
+});
+
+it("warns when an all-day proposal overlaps an Event on any included day", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() {
+      return [{ kind: "timed" as const, title: "Dinner", source: "Family",
+        start: "2026-08-04T22:00:00.000Z", end: "2026-08-04T23:00:00.000Z" }];
+    },
+  });
+
+  expect(await calendar.prepareEvent({
+    kind: "all-day", title: "Staycation", startDate: "2026-08-03",
+    throughDate: "2026-08-04",
+  })).toMatchObject({
+    status: "ok",
+    proposal: { warnings: [{
+      kind: "overlap", message: "Overlaps Dinner (Family)",
+      conflict: { kind: "timed", title: "Dinner", source: "Family",
+        start: "2026-08-04T22:00:00.000Z", end: "2026-08-04T23:00:00.000Z" },
+    }] },
+  });
+});
+
+it("uses the Write Calendar timezone for all-day conflict boundaries", async () => {
+  const listEvents = vi.fn(async () => []);
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; }, listEvents,
+  });
+
+  await calendar.prepareEvent({
+    kind: "all-day", title: "Tokyo holiday", startDate: "2026-08-03",
+    timeZone: "Asia/Tokyo",
+  });
+
+  expect(listEvents).toHaveBeenCalledWith({
+    start: "2026-08-03T04:00:00.000Z",
+    end: "2026-08-04T04:00:00.000Z",
+    timeZone: "America/New_York",
+  });
+});
+
+it("invalidates approval when a new conflict appears before creation", async () => {
+  const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
+  const listEvents = vi.fn()
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{ kind: "timed" as const, title: "Team sync", source: "Work",
+      start: "2026-08-03T13:15:00.000Z", end: "2026-08-03T14:00:00.000Z" }]);
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; }, listEvents, createEvent,
+  });
+  const prepared = await calendar.prepareEvent({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+  });
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+    status: "error", reason: "conflicts_changed",
+  });
+  expect(listEvents).toHaveBeenCalledTimes(2);
+  expect(createEvent).not.toHaveBeenCalled();
+});
+
+it("invalidates approval when a conflict is removed before creation", async () => {
+  const conflict = { kind: "all-day" as const, title: "Vacation", source: "Personal",
+    startDate: "2026-08-03", endDate: "2026-08-04" };
+  const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
+  const listEvents = vi.fn().mockResolvedValueOnce([conflict]).mockResolvedValueOnce([]);
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; }, listEvents, createEvent,
+  });
+  const prepared = await calendar.prepareEvent({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+  });
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+    status: "error", reason: "conflicts_changed",
+  });
+  expect(createEvent).not.toHaveBeenCalled();
+});
+
+it("invalidates approval when a same-named conflict changes time", async () => {
+  const original = { kind: "timed" as const, title: "Team sync", source: "Work",
+    start: "2026-08-03T13:00:00.000Z", end: "2026-08-03T13:20:00.000Z" };
+  const moved = { ...original, start: "2026-08-03T13:10:00.000Z",
+    end: "2026-08-03T13:30:00.000Z" };
+  const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
+  const listEvents = vi.fn().mockResolvedValueOnce([original]).mockResolvedValueOnce([moved]);
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; }, listEvents, createEvent,
+  });
+  const prepared = await calendar.prepareEvent({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+  });
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+    status: "error", reason: "conflicts_changed",
+  });
+  expect(createEvent).not.toHaveBeenCalled();
+});
+
+it("fails closed when conflict revalidation cannot read the Calendar", async () => {
+  const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
+  const listEvents = vi.fn().mockResolvedValueOnce([])
+    .mockRejectedValueOnce(new CalendarAdapterError("unavailable"));
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; }, listEvents, createEvent,
+  });
+  const prepared = await calendar.prepareEvent({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+  });
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+    status: "error", reason: "unavailable",
+  });
+  expect(createEvent).not.toHaveBeenCalled();
+});
+
+it("invalidates approval when the Write Calendar timezone changes", async () => {
+  const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
+  const getDefaultTimeZone = vi.fn()
+    .mockResolvedValueOnce("America/New_York")
+    .mockResolvedValueOnce("America/Chicago");
+  const calendar = createCalendar({
+    getDefaultTimeZone, async listEvents() { return []; }, createEvent,
+  });
+  const prepared = await calendar.prepareEvent({
+    kind: "all-day", title: "Vacation", startDate: "2026-08-03",
+  });
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+    status: "error", reason: "conflicts_changed",
+  });
+  expect(createEvent).not.toHaveBeenCalled();
 });
 
 it("rejects a timed Event in a nonexistent DST wall-clock time", async () => {

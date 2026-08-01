@@ -94,7 +94,8 @@ it("refuses Calendar Event creation when the executing caller is not the Owner",
   const proposal = {
     kind: "all-day" as const, proposalId: "0".repeat(64), title: "Private",
     startDate: "2026-08-07", throughDate: "2026-08-07", timeZone: "UTC",
-    location: null, description: null, warning: null,
+    conflictTimeZone: "UTC",
+    location: null, description: null, warnings: [],
   };
 
   expect(await create.execute({ proposal }, context("telegram:99")))

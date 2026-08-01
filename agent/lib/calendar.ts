@@ -8,8 +8,13 @@ export type CalendarEvent =
   | { kind: "all-day"; endDate: string; source: string; startDate: string; title: string }
   | { kind: "timed"; end: string; source: string; start: string; title: string };
 
+type EventProposalWarning =
+  | { kind: "starts-in-past"; message: "Starts in the past" }
+  | { conflict: CalendarEvent; kind: "overlap"; message: string };
+
 type EventProposalDetails =
   | {
+      conflictTimeZone: string;
       description: string | null;
       endLocal: string;
       kind: "timed";
@@ -17,9 +22,10 @@ type EventProposalDetails =
       startLocal: string;
       timeZone: string;
       title: string;
-      warning: "Starts in the past" | null;
+      warnings: EventProposalWarning[];
     }
   | {
+      conflictTimeZone: string;
       description: string | null;
       kind: "all-day";
       location: string | null;
@@ -27,14 +33,14 @@ type EventProposalDetails =
       throughDate: string;
       timeZone: string;
       title: string;
-      warning: "Starts in the past" | null;
+      warnings: EventProposalWarning[];
     };
 
 export type EventProposal = EventProposalDetails & { proposalId: string };
 
 export type CalendarEventWrite = (
-  | Omit<Extract<EventProposalDetails, { kind: "timed" }>, "warning">
-  | Omit<Extract<EventProposalDetails, { kind: "all-day" }>, "warning">
+  | Omit<Extract<EventProposalDetails, { kind: "timed" }>, "warnings" | "conflictTimeZone">
+  | Omit<Extract<EventProposalDetails, { kind: "all-day" }>, "warnings" | "conflictTimeZone">
 ) & { idempotencyKey: string };
 
 export interface CalendarAdapter {
@@ -219,12 +225,77 @@ function sortEvents(events: readonly CalendarEvent[], timeZone: string): Calenda
   });
 }
 
+interface EventInterval {
+  end: Date;
+  start: Date;
+}
+
+function proposalInterval(proposal: EventProposalDetails): EventInterval {
+  if (proposal.kind === "timed") {
+    return {
+      start: localDateTimeInstant(proposal.startLocal, proposal.timeZone) as Date,
+      end: localDateTimeInstant(proposal.endLocal, proposal.timeZone) as Date,
+    };
+  }
+  return {
+    start: zonedMidnight(parseDate(proposal.startDate)!, proposal.conflictTimeZone),
+    end: zonedMidnight(addDays(parseDate(proposal.throughDate)!, 1), proposal.conflictTimeZone),
+  };
+}
+
+function calendarEventInterval(event: CalendarEvent, timeZone: string): EventInterval | undefined {
+  if (event.kind === "timed") {
+    const start = new Date(event.start);
+    const end = new Date(event.end);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return undefined;
+    return { start, end };
+  }
+  const startDate = parseDate(event.startDate);
+  const endDate = parseDate(event.endDate);
+  if (!startDate || !endDate) return undefined;
+  return { start: zonedMidnight(startDate, timeZone), end: zonedMidnight(endDate, timeZone) };
+}
+
+function conflictWarnings(
+  events: readonly CalendarEvent[],
+  interval: EventInterval,
+  timeZone: string,
+): EventProposalWarning[] {
+  return events.flatMap((event) => {
+    const existing = calendarEventInterval(event, timeZone);
+    if (!existing || interval.start >= existing.end || interval.end <= existing.start) return [];
+    const conflict: CalendarEvent = event.kind === "timed"
+      ? { ...event, start: existing.start.toISOString(), end: existing.end.toISOString() }
+      : event;
+    return [{
+      kind: "overlap" as const,
+      message: `Overlaps ${event.title} (${event.source})`,
+      conflict,
+    }];
+  }).sort((left, right) => JSON.stringify(canonicalValue(left.conflict))
+    .localeCompare(JSON.stringify(canonicalValue(right.conflict))));
+}
+
+function failureReason(error: unknown): CalendarFailure {
+  return error instanceof CalendarAdapterError ? error.reason : "unavailable";
+}
+
 export function createCalendar(
   adapter: CalendarAdapter,
   options: { now?: () => Date; maxRangeDays?: number } = {},
 ) {
   const now = options.now ?? (() => new Date());
   const maxRangeDays = options.maxRangeDays ?? 31;
+
+  async function readConflictWarnings(proposal: EventProposalDetails) {
+    const interval = proposalInterval(proposal);
+    const events = await adapter.listEvents({
+      start: interval.start.toISOString(),
+      end: interval.end.toISOString(),
+      timeZone: proposal.conflictTimeZone,
+    });
+    return conflictWarnings(events, interval, proposal.conflictTimeZone);
+  }
 
   return {
     async prepareEvent(request:
@@ -234,13 +305,16 @@ export function createCalendar(
       const title = request.title.trim();
       if (!title) return { status: "error" as const, reason: "title_required" as const };
       let timeZone: string;
+      let writeTimeZone: string;
       try {
-        timeZone = request.timeZone ?? await adapter.getDefaultTimeZone();
+        writeTimeZone = await adapter.getDefaultTimeZone();
+        timeZone = request.timeZone ?? writeTimeZone;
       } catch (error) {
         return { status: "error" as const, reason: error instanceof CalendarAdapterError ? error.reason : "unavailable" as const };
       }
       if (!isTimeZone(timeZone)) return { status: "error" as const, reason: "invalid_time_zone" as const };
       const common = {
+        conflictTimeZone: writeTimeZone,
         description: request.description?.trim() || null,
         location: request.location?.trim() || null,
         timeZone,
@@ -257,7 +331,7 @@ export function createCalendar(
         }
         if (!start || !end || end <= start) return { status: "error" as const, reason: "invalid_time" as const };
         proposal = { ...common, kind: "timed", startLocal: request.startLocal, endLocal,
-          warning: start < now() ? "Starts in the past" : null };
+          warnings: start < now() ? [{ kind: "starts-in-past", message: "Starts in the past" }] : [] };
       } else {
         const start = parseDate(request.startDate);
         const through = parseDate(request.throughDate ?? request.startDate);
@@ -266,25 +340,42 @@ export function createCalendar(
         }
         proposal = { ...common, kind: "all-day", startDate: request.startDate,
           throughDate: request.throughDate ?? request.startDate,
-          warning: zonedMidnight(start, timeZone) < now() ? "Starts in the past" : null };
+          warnings: zonedMidnight(start, timeZone) < now()
+            ? [{ kind: "starts-in-past", message: "Starts in the past" }] : [] };
+      }
+      try {
+        proposal.warnings.push(...await readConflictWarnings(proposal));
+      } catch (error) {
+        return { status: "error" as const, reason: failureReason(error) };
       }
       return { status: "ok" as const, proposal: { ...proposal, proposalId: proposalIdentity(proposal) } as EventProposal };
     },
     async createEvent(proposal: EventProposal, idempotencyKey: string) {
-      const { proposalId, warning, ...event } = proposal;
-      if (proposalIdentity({ ...event, warning } as EventProposalDetails) !== proposalId) {
+      const { proposalId, warnings, conflictTimeZone, ...event } = proposal;
+      const approved = { ...event, warnings, conflictTimeZone } as EventProposalDetails;
+      if (proposalIdentity(approved) !== proposalId) {
         return { status: "error" as const, reason: "proposal_changed" as const };
       }
       if (!adapter.createEvent) {
         return { status: "error" as const, reason: "unavailable" as const };
       }
       try {
+        const writeTimeZone = await adapter.getDefaultTimeZone();
+        if (writeTimeZone !== conflictTimeZone) {
+          return { status: "error" as const, reason: "conflicts_changed" as const };
+        }
+        const priorConflicts = warnings.filter((warning) => warning.kind === "overlap");
+        const currentConflicts = await readConflictWarnings(approved);
+        if (JSON.stringify(canonicalValue(currentConflicts)) !==
+            JSON.stringify(canonicalValue(priorConflicts))) {
+          return { status: "error" as const, reason: "conflicts_changed" as const };
+        }
         const created = await adapter.createEvent({ ...event, idempotencyKey });
         return { status: "ok" as const, eventId: created.eventId };
       } catch (error) {
         return {
           status: "error" as const,
-          reason: error instanceof CalendarAdapterError ? error.reason : "unavailable" as const,
+          reason: failureReason(error),
         };
       }
     },

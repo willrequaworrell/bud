@@ -13,6 +13,16 @@ const periodSchema = z.discriminatedUnion("kind", [
 ]);
 
 const optionalText = z.string().trim().min(1).optional();
+const calendarEventSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("timed"), title: z.string(), source: z.string(),
+    start: z.string(), end: z.string() }),
+  z.object({ kind: z.literal("all-day"), title: z.string(), source: z.string(),
+    startDate: z.iso.date(), endDate: z.iso.date() }),
+]);
+const proposalWarningSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("starts-in-past"), message: z.literal("Starts in the past") }),
+  z.object({ kind: z.literal("overlap"), message: z.string(), conflict: calendarEventSchema }),
+]);
 const localDateTime = z.string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
   .describe("Exact local wall-clock date and time in YYYY-MM-DDTHH:mm 24-hour format, with no seconds or UTC offset; resolve natural language before calling");
@@ -35,14 +45,16 @@ const proposalSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("timed"), proposalId: z.string().length(64), title: z.string(),
     startLocal: z.string(), endLocal: z.string(), timeZone: z.string(),
+    conflictTimeZone: z.string(),
     location: z.string().nullable(), description: z.string().nullable(),
-    warning: z.literal("Starts in the past").nullable(),
+    warnings: z.array(proposalWarningSchema),
   }),
   z.object({
     kind: z.literal("all-day"), proposalId: z.string().length(64), title: z.string(),
     startDate: z.iso.date(), throughDate: z.iso.date(), timeZone: z.string(),
+    conflictTimeZone: z.string(),
     location: z.string().nullable(), description: z.string().nullable(),
-    warning: z.literal("Starts in the past").nullable(),
+    warnings: z.array(proposalWarningSchema),
   }),
 ]);
 
@@ -55,7 +67,7 @@ export function createPrepareCalendarEventTool(options: {
 }) {
   const calendar = createCalendar(options.adapter, options.now ? { now: options.now } : {});
   return defineTool({
-    description: "Prepare one complete, immutable, non-recurring Calendar Event proposal. Accept natural language from the Owner, but normalize resolved timed values to YYYY-MM-DDTHH:mm 24-hour local wall-clock fields before calling. Ask one focused clarification only when title, date, time, all-day intent, or timezone is materially ambiguous. Never ask the Owner to format tool input. This tool never writes.",
+    description: "Prepare one complete, immutable, non-recurring Calendar Event proposal, including warnings for named Events that overlap it. Accept natural language from the Owner, but normalize resolved timed values to YYYY-MM-DDTHH:mm 24-hour local wall-clock fields before calling. Ask one focused clarification only when title, date, time, all-day intent, or timezone is materially ambiguous. Never ask the Owner to format tool input. This tool never writes.",
     inputSchema: prepareEventSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
@@ -69,7 +81,7 @@ export function createCreateCalendarEventTool(options: {
 }) {
   const calendar = createCalendar(options.adapter, options.now ? { now: options.now } : {});
   return defineTool({
-    description: "Create exactly one previously prepared Calendar Event on the configured Write Calendar. Never alter proposal fields. Every call requires Owner approval.",
+    description: "Revalidate Calendar conflicts, then create exactly one previously prepared Calendar Event on the configured Write Calendar. If conflicts changed, prepare a fresh Proposal and request approval again. Never alter proposal fields. Every call requires Owner approval.",
     inputSchema: z.object({ proposal: proposalSchema }),
     approval: always(),
     async execute(input, ctx: ToolContext) {
