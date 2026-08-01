@@ -27,6 +27,29 @@ it("creates an all-day Event on only the configured Write Calendar", async () =>
   });
 });
 
+it("sends timed Events to Google as RFC3339 date-times", async () => {
+  const googleFetch = vi.fn<typeof fetch>(async () => Response.json({ id: "created-id" }));
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  await adapter.createEvent!({
+    kind: "timed", title: "Pick up handlebars",
+    startLocal: "2026-08-01T11:30", endLocal: "2026-08-01T12:30",
+    timeZone: "America/New_York", location: null, description: null,
+    idempotencyKey: "handlebars",
+  });
+
+  const body = JSON.parse(String(googleFetch.mock.calls[0]![1]?.body));
+  expect(body.start).toEqual({
+    dateTime: "2026-08-01T11:30:00", timeZone: "America/New_York",
+  });
+  expect(body.end).toEqual({
+    dateTime: "2026-08-01T12:30:00", timeZone: "America/New_York",
+  });
+});
+
 it("treats a retried identical Google Event insert as success", async () => {
   let insertedBody: unknown;
   const googleFetch = vi.fn<typeof fetch>(async (_input, init) => {

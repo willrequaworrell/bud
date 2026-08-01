@@ -66,6 +66,10 @@ export function createGoogleCalendarAdapter(
     return `bud${createHash("sha256").update(idempotencyKey).digest("hex")}`;
   }
 
+  function googleDateTime(localDateTime: string): string {
+    return `${localDateTime}:00`;
+  }
+
   function providerLocalTime(value: string | undefined, timeZone: string): string | undefined {
     if (!value) return undefined;
     if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return value;
@@ -104,7 +108,7 @@ export function createGoogleCalendarAdapter(
       ...(event.location ? { location: event.location } : {}),
       ...(event.description ? { description: event.description } : {}),
       ...(event.kind === "timed"
-        ? { start: { dateTime: event.startLocal, timeZone: event.timeZone }, end: { dateTime: event.endLocal, timeZone: event.timeZone } }
+        ? { start: { dateTime: googleDateTime(event.startLocal), timeZone: event.timeZone }, end: { dateTime: googleDateTime(event.endLocal), timeZone: event.timeZone } }
         : { start: { date: event.startDate }, end: { date: nextDate(event.throughDate) } }),
       reminders: { useDefault: true },
     };
