@@ -96,6 +96,21 @@ function ownerAuth(message: TelegramMessage) {
   } as const;
 }
 
+function ownerCallbackAuth(state: TelegramChannelState, ownerId: string) {
+  if (!state.chatId || state.chatType !== "private" || state.triggeringUserId !== ownerId) return null;
+  return {
+    attributes: {
+      chat_id: state.chatId,
+      chat_type: state.chatType,
+      user_id: state.triggeringUserId,
+    },
+    authenticator: "telegram-webhook",
+    issuer: "telegram",
+    principalId: `telegram:${ownerId}`,
+    principalType: "user",
+  } as const;
+}
+
 export function createBudTelegramChannel(
   channelConfig: BudConfig,
   telegramFetch?: typeof fetch,
@@ -141,7 +156,10 @@ export function createBudTelegramChannel(
             ? input.message
             : input;
         if (message !== "/reset") {
-          if (typeof message !== "string") return args.send(input, options);
+          if (typeof message !== "string") {
+            const auth = options.auth ?? ownerCallbackAuth(options.state, channelConfig.ownerId);
+            return args.send(input, { ...options, auth });
+          }
           const active = await args.resolveActiveSession({
             continuationToken: options.continuationToken,
           });

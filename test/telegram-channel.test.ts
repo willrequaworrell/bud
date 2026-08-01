@@ -19,12 +19,20 @@ function update(senderId: number, text: string, chatType: "private" | "group" = 
     from: { id: senderId, is_bot: false, first_name: "Sender" }, text } };
 }
 
+function callbackUpdate(senderId: number, data: string) {
+  return { update_id: 2, callback_query: { id: "callback-1", data,
+    from: { id: senderId, is_bot: false, first_name: "Sender" },
+    message: { message_id: 8, date: 0, chat: { id: senderId, type: "private" },
+      from: { id: 100, is_bot: true, first_name: "Bud" }, text: "Approve?" } } };
+}
+
 async function deliverWithSessionState(
   activeSession: boolean,
   pendingProposal: boolean | "resolved",
   ...updates: unknown[]
 ) {
   const outbound: string[] = [];
+  const authContexts: unknown[] = [];
   const model = vi.fn(async (message: string) => `Model: ${message}`);
   const telegramFetch = vi.fn<typeof fetch>(async (_request, init) => {
     const body = JSON.parse(String(init?.body)) as { text?: string };
@@ -36,6 +44,7 @@ async function deliverWithSessionState(
   const tasks: Promise<unknown>[] = [];
   const args = {
     send: vi.fn(async (input, options) => {
+      authContexts.push(options.auth);
       const payload = input as { message?: string; inputResponses?: Array<{ requestId: string }> };
       if (payload.inputResponses) {
         await (channel as any).adapter.deliver(payload, {
@@ -83,7 +92,7 @@ async function deliverWithSessionState(
     }), args);
     await Promise.all(tasks.splice(0));
   }
-  return { model, outbound };
+  return { authContexts, model, outbound };
 }
 
 async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
@@ -105,6 +114,18 @@ describe("Telegram Channel", () => {
     const result = await deliver(update(42, "What is next?"));
     expect(result.model).toHaveBeenCalledOnce();
     expect(result.outbound).toEqual(["Model: What is next?"]);
+  });
+
+  it("authenticates an Owner's native approval callback", async () => {
+    const result = await deliver(callbackUpdate(42, "eve:0"));
+    expect(result.authContexts).toEqual([
+      expect.objectContaining({ principalId: "telegram:42" }),
+    ]);
+  });
+
+  it("does not authenticate another sender's native approval callback", async () => {
+    const result = await deliver(callbackUpdate(99, "eve:0"));
+    expect(result.authContexts).toEqual([null]);
   });
 
   it.each([[99, "private"], [42, "group"]] as const)(
