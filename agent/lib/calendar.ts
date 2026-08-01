@@ -162,8 +162,19 @@ function localDateTimeInstant(value: string, timeZone: string): Date | "ambiguou
   return undefined;
 }
 
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalValue(item)]),
+    );
+  }
+  return value;
+}
+
 function proposalIdentity(proposal: EventProposalDetails): string {
-  return createHash("sha256").update(JSON.stringify(proposal)).digest("hex");
+  return createHash("sha256").update(JSON.stringify(canonicalValue(proposal))).digest("hex");
 }
 
 function zonedMidnight(target: LocalDate, timeZone: string): Date {

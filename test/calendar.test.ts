@@ -178,6 +178,20 @@ it("creates exactly an unchanged multi-day Event Proposal with a retry key", asy
     location: "Cape May", description: null, idempotencyKey: "call-123",
   });
 
+  const proposal = prepared.proposal;
+  if (proposal.kind !== "all-day") throw new Error("expected all-day proposal");
+  expect(await calendar.createEvent({
+    proposalId: proposal.proposalId,
+    warning: proposal.warning,
+    title: proposal.title,
+    kind: proposal.kind,
+    timeZone: proposal.timeZone,
+    throughDate: proposal.throughDate,
+    startDate: proposal.startDate,
+    description: proposal.description,
+    location: proposal.location,
+  }, "call-456")).toEqual({ status: "ok", eventId: "google-event" });
+
   await expect(calendar.createEvent(
     { ...prepared.proposal, title: "Changed after approval" }, "call-123",
   )).resolves.toEqual({ status: "error", reason: "proposal_changed" });
