@@ -13,15 +13,20 @@ const periodSchema = z.discriminatedUnion("kind", [
 ]);
 
 const optionalText = z.string().trim().min(1).optional();
+const localDateTime = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+  .describe("Exact local wall-clock date and time in YYYY-MM-DDTHH:mm 24-hour format, with no seconds or UTC offset; resolve natural language before calling");
 const prepareEventSchema = z.discriminatedUnion("kind", [
   z.object({
-    kind: z.literal("timed"), title: z.string(), startLocal: z.string(),
-    endLocal: z.string().optional(), timeZone: z.string().optional(),
+    kind: z.literal("timed"), title: z.string(), startLocal: localDateTime,
+    endLocal: localDateTime.optional(),
+    timeZone: z.string().optional().describe("IANA timezone such as America/New_York; omit to use the Write Calendar timezone"),
     location: optionalText, description: optionalText,
   }),
   z.object({
     kind: z.literal("all-day"), title: z.string(), startDate: z.iso.date(),
-    throughDate: z.iso.date().optional(), timeZone: z.string().optional(),
+    throughDate: z.iso.date().optional(),
+    timeZone: z.string().optional().describe("IANA timezone; omit to use the Write Calendar timezone"),
     location: optionalText, description: optionalText,
   }),
 ]);
@@ -50,7 +55,7 @@ export function createPrepareCalendarEventTool(options: {
 }) {
   const calendar = createCalendar(options.adapter, options.now ? { now: options.now } : {});
   return defineTool({
-    description: "Prepare one complete, immutable, non-recurring Calendar Event proposal. Resolve natural language first; ask one focused question when title, date, time, all-day intent, or timezone is materially ambiguous. This tool never writes.",
+    description: "Prepare one complete, immutable, non-recurring Calendar Event proposal. Accept natural language from the Owner, but normalize resolved timed values to YYYY-MM-DDTHH:mm 24-hour local wall-clock fields before calling. Ask one focused clarification only when title, date, time, all-day intent, or timezone is materially ambiguous. Never ask the Owner to format tool input. This tool never writes.",
     inputSchema: prepareEventSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };

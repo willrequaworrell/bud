@@ -63,6 +63,28 @@ it("prepares without approval and creates only through per-call approval", async
   expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "call-123" }));
 });
 
+it("requires the model to normalize timed Event fields before calling Calendar", () => {
+  const prepare = createPrepareCalendarEventTool({
+    adapter: { async getDefaultTimeZone() { return "UTC"; }, async listEvents() { return []; } },
+    ownerId: "42",
+  });
+  const schema = prepare.inputSchema as unknown as {
+    safeParse(input: unknown): { success: boolean };
+  };
+
+  expect(schema.safeParse({
+    kind: "timed", title: "Pick up handlebars",
+    startLocal: "2026-08-01T11:30", endLocal: "2026-08-01T12:30",
+    timeZone: "America/New_York",
+  }).success).toBe(true);
+  expect(schema.safeParse({
+    kind: "timed", title: "Pick up handlebars",
+    startLocal: "Saturday, Aug 1, 2026, 11:30 AM",
+    endLocal: "12:30 PM",
+    timeZone: "America/New_York",
+  }).success).toBe(false);
+});
+
 it("refuses Calendar Event creation when the executing caller is not the Owner", async () => {
   const createEvent = vi.fn(async () => ({ eventId: "event-1" }));
   const create = createCreateCalendarEventTool({
