@@ -8,6 +8,7 @@ import {
   type CalendarEventWrite,
 } from "./calendar.js";
 import type { TokenProvider } from "./token-provider.js";
+import { TokenProviderError } from "./token-provider.js";
 
 interface GoogleCalendarOptions {
   fetch?: typeof fetch;
@@ -41,7 +42,13 @@ export function createGoogleCalendarAdapter(
   }
 
   async function googleRequest(path: string, init: RequestInit): Promise<unknown> {
-    const token = await options.tokenProvider.getAccessToken();
+    let token: string;
+    try {
+      token = await options.tokenProvider.getAccessToken();
+    } catch (error) {
+      if (error instanceof TokenProviderError) throw new CalendarAdapterError(error.reason);
+      throw new CalendarAdapterError("unavailable");
+    }
     let response: Response;
     try {
       response = await request(`https://www.googleapis.com/calendar/v3${path}`, {

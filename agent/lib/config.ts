@@ -5,16 +5,19 @@ export interface BudConfig {
   googleOAuthClientId: string;
   googleOAuthClientSecret: string;
   googleOAuthRefreshToken: string;
+  googleTasksListId: string;
   modelId: string;
   ownerId: string;
   telegramBotToken: string;
   telegramWebhookSecret: string;
+  tasksResultLimit: number;
 }
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
 const DEFAULT_ASSISTANT_NAME = "Bud";
 const DEFAULT_MODEL_ID = "openai/gpt-5.4-mini";
+const DEFAULT_TASKS_RESULT_LIMIT = 25;
 
 export function loadConfig(environment: Environment = process.env): BudConfig {
   const errors: string[] = [];
@@ -30,6 +33,10 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
         .map((calendarId) => calendarId.trim())
         .filter(Boolean),
     )];
+  const googleTasksListId = environment.GOOGLE_TASKS_LIST_ID?.trim() || "@default";
+  const tasksResultLimit = environment.GOOGLE_TASKS_RESULT_LIMIT === undefined
+    ? DEFAULT_TASKS_RESULT_LIMIT
+    : Number(environment.GOOGLE_TASKS_RESULT_LIMIT);
   const ownerId = environment.TELEGRAM_OWNER_ID?.trim();
   const telegramBotToken = environment.TELEGRAM_BOT_TOKEN?.trim();
   const telegramWebhookSecret =
@@ -43,6 +50,9 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   }
   if (googleCalendarReadIds.length > 10) {
     errors.push("GOOGLE_CALENDAR_READ_IDS supports at most 10 calendars");
+  }
+  if (!Number.isInteger(tasksResultLimit) || tasksResultLimit < 1 || tasksResultLimit > 100) {
+    errors.push("GOOGLE_TASKS_RESULT_LIMIT must be an integer from 1 to 100");
   }
   if (!ownerId || !/^[1-9]\d*$/.test(ownerId)) {
     errors.push("TELEGRAM_OWNER_ID must be a positive numeric Telegram user ID");
@@ -66,9 +76,11 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
     googleOAuthClientId: googleOAuthClientId!,
     googleOAuthClientSecret: googleOAuthClientSecret!,
     googleOAuthRefreshToken: googleOAuthRefreshToken!,
+    googleTasksListId,
     modelId: environment.BUD_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
     ownerId: ownerId!,
     telegramBotToken: telegramBotToken!,
     telegramWebhookSecret: telegramWebhookSecret!,
+    tasksResultLimit,
   };
 }

@@ -11,9 +11,11 @@ import {
 const config: BudConfig = {
   assistantName: "Bud", googleCalendarId: "primary", googleOAuthClientId: "client",
   googleCalendarReadIds: ["primary"],
+  googleTasksListId: "@default",
   googleOAuthClientSecret: "secret", googleOAuthRefreshToken: "refresh",
   modelId: "test/deterministic", ownerId: "42", telegramBotToken: "bot",
   telegramWebhookSecret: "webhook",
+  tasksResultLimit: 25,
 };
 
 function update(senderId: number, text: string, chatType: "private" | "group" = "private") {

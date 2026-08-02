@@ -34,7 +34,9 @@ describe("configuration", () => {
       assistantName: "Bud",
       googleCalendarId: "primary",
       googleCalendarReadIds: ["primary"],
+      googleTasksListId: "@default",
       modelId: "openai/gpt-5.4-mini",
+      tasksResultLimit: 25,
     });
     expect(
       loadConfig({
@@ -46,6 +48,30 @@ describe("configuration", () => {
       assistantName: "Sprout",
       modelId: "anthropic/claude-haiku-4.5",
     });
+  });
+
+  it("configures one Google Tasks list and a bounded result limit", () => {
+    const required = {
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+      GOOGLE_OAUTH_REFRESH_TOKEN: "refresh-token",
+      TELEGRAM_OWNER_ID: "42",
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "webhook-secret",
+    };
+
+    expect(loadConfig({
+      ...required,
+      GOOGLE_TASKS_LIST_ID: "private-list-id",
+      GOOGLE_TASKS_RESULT_LIMIT: "40",
+    })).toMatchObject({
+      googleTasksListId: "private-list-id",
+      tasksResultLimit: 40,
+    });
+    expect(() => loadConfig({
+      ...required,
+      GOOGLE_TASKS_RESULT_LIMIT: "0",
+    })).toThrowError("GOOGLE_TASKS_RESULT_LIMIT must be an integer from 1 to 100");
   });
 
   it("parses a unique ordered Calendar Read Set independently of the Write Calendar", () => {

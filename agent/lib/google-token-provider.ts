@@ -1,5 +1,4 @@
-import { CalendarAdapterError } from "./calendar.js";
-import type { TokenProvider } from "./token-provider.js";
+import { TokenProviderError, type TokenProvider } from "./token-provider.js";
 
 interface GoogleTokenProviderOptions {
   clientId: string;
@@ -31,10 +30,10 @@ export function createGoogleTokenProvider(
           method: "POST",
         });
       } catch {
-        throw new CalendarAdapterError("unavailable");
+        throw new TokenProviderError("unavailable");
       }
       if (!response.ok) {
-        throw new CalendarAdapterError(
+        throw new TokenProviderError(
           response.status === 400 || response.status === 401
             ? "access_revoked"
             : response.status === 429
@@ -47,7 +46,7 @@ export function createGoogleTokenProvider(
         expires_in?: number;
       };
       if (!payload.access_token) {
-        throw new CalendarAdapterError("authentication_expired");
+        throw new TokenProviderError("authentication_expired");
       }
       cached = {
         expiresAt: now() + (payload.expires_in ?? 3600) * 1000,
