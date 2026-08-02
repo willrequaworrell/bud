@@ -3,7 +3,10 @@ import type { TelegramChannelState } from "eve/channels/telegram";
 import { describe, expect, it, vi } from "vitest";
 
 import type { BudConfig } from "../agent/lib/config.js";
-import { createBudTelegramChannel } from "../agent/lib/telegram-channel.js";
+import {
+  createBudTelegramChannel,
+  handleTelegramInputRequested,
+} from "../agent/lib/telegram-channel.js";
 
 const config: BudConfig = {
   assistantName: "Bud", googleCalendarId: "primary", googleOAuthClientId: "client",
@@ -104,6 +107,73 @@ async function deliver(...updates: unknown[]) {
 }
 
 describe("Telegram Channel", () => {
+  it("shows Event details and conflict warnings in the approval prompt", async () => {
+    const post = vi.fn(async () => ({ id: "message-1", raw: null }));
+    const state = {} as TelegramChannelState;
+
+    await handleTelegramInputRequested({ requests: [{
+      action: {
+        callId: "call-1",
+        input: { proposal: {
+          kind: "timed", title: "Dentist",
+          startLocal: "2026-08-02T09:00", endLocal: "2026-08-02T09:30",
+          timeZone: "America/New_York", location: "Dental Arts", description: null,
+          warnings: [{ kind: "overlap", message: "Overlaps Team sync (Work)" }],
+        } },
+        kind: "tool-call", toolName: "create_calendar_event",
+      },
+      allowFreeform: false,
+      display: "confirmation",
+      options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
+      prompt: "Approve tool call: create_calendar_event",
+      requestId: "approval-1",
+    }] } as never, { state, telegram: { post } } as never, {} as never);
+
+    expect(post).toHaveBeenCalledWith({
+      reply_markup: { inline_keyboard: [[
+        { callback_data: "eve:0", text: "Yes" },
+        { callback_data: "eve:1", text: "No" },
+      ]] },
+      text: [
+        "Create Calendar Event?",
+        "",
+        "Dentist",
+        "When: 2026-08-02T09:00–2026-08-02T09:30 (America/New_York)",
+        "Location: Dental Arts",
+        "",
+        "Warning: Overlaps Team sync (Work)",
+      ].join("\n"),
+    });
+  });
+
+  it("shows every warning before offering approval when the Proposal needs multiple messages", async () => {
+    const post = vi.fn(async (_message: unknown) => ({ id: "message-1", raw: null }));
+    const warnings = Array.from({ length: 80 }, (_, index) => ({
+      kind: "overlap",
+      message: `Overlaps conflict ${String(index).padStart(2, "0")} (${"Calendar".repeat(10)})`,
+    }));
+
+    await handleTelegramInputRequested({ requests: [{
+      action: { callId: "call-1", kind: "tool-call", toolName: "create_calendar_event",
+        input: { proposal: { kind: "all-day", title: "Retreat",
+          startDate: "2026-08-02", throughDate: "2026-08-03", timeZone: "America/New_York",
+          location: null, description: null, warnings } } },
+      allowFreeform: false, display: "confirmation",
+      options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
+      prompt: "Approve tool call: create_calendar_event", requestId: "approval-1",
+    }] } as never, { state: {} as TelegramChannelState, telegram: { post } } as never, {} as never);
+
+    expect(post.mock.calls.length).toBeGreaterThan(1);
+    const messages = post.mock.calls.map(([message]) => message as {
+      reply_markup?: unknown; text: string;
+    });
+    for (const warning of warnings) {
+      expect(messages.map(({ text }) => text).join("")).toContain(`Warning: ${warning.message}`);
+    }
+    expect(messages.slice(0, -1).every((message) => message.reply_markup === undefined)).toBe(true);
+    expect(messages.at(-1)?.reply_markup).toBeDefined();
+  });
+
   it("routes Calendar language through Eve instead of intercepting it", async () => {
     const result = await deliver(update(42, "What's on my calendar Thursday?"));
     expect(result.model).toHaveBeenCalledWith("What's on my calendar Thursday?");

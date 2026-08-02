@@ -68,12 +68,16 @@ reads are re-authorized inside the tool as well as at Telegram ingress.
 
 Bud prepares one immutable timed or all-day Event Proposal before requesting a
 write. A missing timed duration defaults to 30 minutes. Google Calendar defaults
-supply reminders. Attendees, conferencing, recurrence, custom reminders, and
-conflict detection are not part of this slice.
+supply reminders. Preparation checks the complete Read Set for overlapping
+Events, and creation revalidates those conflicts immediately before writing.
+Attendees, conferencing, recurrence, and custom reminders are not part of this
+slice.
 
-Telegram displays Eve's native approval buttons. Approve writes exactly the
-Proposal to the configured Write Calendar; Deny writes nothing. While approval
-is pending, resolve it or use `/reset` before starting another request.
+Telegram displays the Event details and any conflict warnings above Eve's native
+approval buttons. Approve writes exactly the Proposal to the configured Write
+Calendar; Deny writes nothing. A changed conflict requires a fresh Proposal and
+approval. While approval is pending, resolve it or use `/reset` before starting
+another request.
 
 ## Verification
 
