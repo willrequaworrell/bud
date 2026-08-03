@@ -129,6 +129,44 @@ it("treats a retried identical Google Event insert as success", async () => {
   expect(googleFetch).toHaveBeenCalledTimes(2);
 });
 
+it("recovers when a temporary Google error hides a successful recurring Event insert", async () => {
+  let insertedBody: Record<string, unknown> | undefined;
+  let postCount = 0;
+  const googleFetch = vi.fn<typeof fetch>(async (_input, init) => {
+    if (init?.method === "POST") {
+      postCount += 1;
+      if (postCount === 1) {
+        insertedBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+        return new Response(null, { status: 503 });
+      }
+      return new Response(null, { status: 409 });
+    }
+    return Response.json(insertedBody);
+  });
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+  const recurringEvent = {
+    kind: "timed" as const, title: "Dentist", startLocal: "2026-08-03T09:00",
+    endLocal: "2026-08-03T09:30", timeZone: "America/New_York",
+    location: null, description: null, idempotencyKey: "temporary-google-error",
+    recurrence: { frequency: "daily" as const, interval: 1,
+      end: { kind: "count" as const, count: 5 } },
+  };
+
+  await expect(adapter.createEvent!(recurringEvent))
+    .rejects.toMatchObject({ reason: "unavailable" });
+  await expect(adapter.createEvent!(recurringEvent))
+    .resolves.toEqual({ eventId: expect.stringMatching(/^bud/) });
+
+  expect(postCount).toBe(2);
+  expect(googleFetch).toHaveBeenCalledTimes(3);
+  expect(insertedBody).toMatchObject({
+    recurrence: ["RRULE:FREQ=DAILY;INTERVAL=1;COUNT=5"],
+  });
+});
+
 it("rejects a retry when the existing Google Event was edited", async () => {
   let insertedBody: any;
   const googleFetch = vi.fn<typeof fetch>(async (_input, init) => {
