@@ -2,7 +2,9 @@ import { defineTool, type ToolContext } from "eve/tools";
 import { always } from "eve/tools/approval";
 import { z } from "zod";
 
-import { createTasks, groupTasks, TasksAdapterError, type TasksAdapter } from "./tasks.js";
+import {
+  createTasks, groupTasks, isTaskProposalUnchanged, TasksAdapterError, type TasksAdapter,
+} from "./tasks.js";
 
 const taskDetailsSchema = z.object({
   title: z.string(),
@@ -13,7 +15,7 @@ const taskDetailsSchema = z.object({
 const taskProposalSchema = z.object({
   title: z.string(), notes: z.string().nullable(), dueDate: z.iso.date().nullable(),
   proposalId: z.string().length(64),
-});
+}).refine(isTaskProposalUnchanged, { message: "Task Proposal fields changed after preparation" });
 
 function isOwner(ctx: ToolContext, ownerId: string) {
   return ctx.session.auth.current?.principalId === `telegram:${ownerId}`;
@@ -22,7 +24,7 @@ function isOwner(ctx: ToolContext, ownerId: string) {
 export function createPrepareTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Prepare one complete immutable Task Proposal. The title is required; notes and a date-only due date are optional. Never infer a due date. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
+    description: "Prepare one complete immutable Task Proposal. The title is required. Include notes only when the Owner explicitly supplies meaningful notes; punctuation around the title is not notes. Include a date-only due date only when the Owner explicitly requests one; otherwise omit dueDate so the Task remains undated. Never infer tomorrow or any other due date. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
     inputSchema: taskDetailsSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
@@ -34,7 +36,7 @@ export function createPrepareTaskTool(options: { adapter: TasksAdapter; ownerId:
 export function createCreateTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Create exactly one previously prepared Task. Never alter Proposal fields. Every call requires Owner approval.",
+    description: "Create exactly one previously prepared Task. Pass the complete Proposal returned by prepare_task through verbatim; never reconstruct, summarize, fill defaults, or alter any field. Every call requires Owner approval.",
     inputSchema: z.object({ proposal: taskProposalSchema }),
     approval: always(),
     async execute(input, ctx: ToolContext) {

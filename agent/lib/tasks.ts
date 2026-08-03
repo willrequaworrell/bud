@@ -42,6 +42,11 @@ function proposalIdentity(proposal: Omit<TaskProposal, "proposalId">): string {
   return createHash("sha256").update(JSON.stringify(proposal)).digest("hex");
 }
 
+export function isTaskProposalUnchanged(proposal: TaskProposal): boolean {
+  const { proposalId, ...details } = proposal;
+  return proposalIdentity(details) === proposalId;
+}
+
 function validDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split("-").map(Number);
@@ -68,10 +73,10 @@ export function createTasks(adapter: TasksAdapter) {
       } };
     },
     async createTask(proposal: TaskProposal, idempotencyKey: string) {
-      const { proposalId, ...task } = proposal;
-      if (proposalIdentity(task) !== proposalId) {
+      if (!isTaskProposalUnchanged(proposal)) {
         return { status: "error" as const, reason: "proposal_changed" as const };
       }
+      const { proposalId: _proposalId, ...task } = proposal;
       if (!adapter.createTask) return { status: "error" as const, reason: "unavailable" as const };
       try {
         const created = await adapter.createTask({ ...task, idempotencyKey });

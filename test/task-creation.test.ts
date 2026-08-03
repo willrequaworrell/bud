@@ -36,6 +36,21 @@ it("changes Proposal identity when any displayed Task detail changes", async () 
   }
 });
 
+it("rejects a reconstructed Proposal before displaying an approval", async () => {
+  const tasks = adapter();
+  const prepare = createPrepareTaskTool({ adapter: tasks, ownerId: "42" });
+  const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
+  const prepared = await prepare.execute({ title: "Fit mouthguard" }, context());
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+  const schema = create.inputSchema as unknown as {
+    safeParse(input: unknown): { success: boolean };
+  };
+
+  expect(schema.safeParse({ proposal: {
+    ...prepared.proposal, dueDate: "2026-08-03", notes: ".",
+  } }).success).toBe(false);
+});
+
 it("creates exactly the approved Task only through per-call approval", async () => {
   const createTask = vi.fn(async () => ({ taskId: "task-1" }));
   const tasks = adapter(createTask);
