@@ -70,8 +70,11 @@ Bud prepares one immutable timed or all-day Event Proposal before requesting a
 write. A missing timed duration defaults to 30 minutes. Google Calendar defaults
 supply reminders. Preparation checks the complete Read Set for overlapping
 Events, and creation revalidates those conflicts immediately before writing.
-Attendees, conferencing, recurrence, and custom reminders are not part of this
-slice.
+Events may recur daily, weekly, or monthly with positive intervals and optional
+weekly weekday selection. Every recurring Event needs an end date or occurrence count and
+is limited to one year and 100 occurrences. Specialized rules and one-off
+exceptions are rejected instead of approximated. Attendees, conferencing, and
+custom reminders are not part of this slice.
 
 Telegram displays the Event details and any conflict warnings above Eve's native
 approval buttons. Approve writes exactly the Proposal to the configured Write

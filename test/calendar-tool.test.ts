@@ -51,6 +51,7 @@ it("prepares without approval and creates only through per-call approval", async
   const create = createCreateCalendarEventTool({ adapter, ownerId: "42" });
   const prepared = await prepare.execute({
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+    recurrence: { frequency: "daily", interval: 1, end: { kind: "count", count: 3 } },
   }, context("telegram:42"));
   if (prepared.status !== "ok") throw new Error("expected proposal");
 
@@ -83,6 +84,30 @@ it("requires the model to normalize timed Event fields before calling Calendar",
     endLocal: "12:30 PM",
     timeZone: "America/New_York",
   }).success).toBe(false);
+});
+
+it("serializes only supported bounded recurrence into the pending Event Proposal", async () => {
+  const tool = createPrepareCalendarEventTool({
+    adapter: { async getDefaultTimeZone() { return "UTC"; }, async listEvents() { return []; } },
+    ownerId: "42", now: () => new Date("2026-08-01T00:00:00Z"),
+  });
+  const schema = tool.inputSchema as unknown as { safeParse(input: unknown): { success: boolean } };
+  const supported = { kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
+    recurrence: { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"],
+      end: { kind: "count", count: 8 } } };
+
+  expect(schema.safeParse(supported).success).toBe(true);
+  expect(schema.safeParse({ ...supported, recurrence: {
+    frequency: "monthly", interval: 1, weekdays: ["MO"],
+    end: { kind: "count", count: 8 }, exceptions: ["2026-09-07"],
+  } }).success).toBe(false);
+  expect(schema.safeParse({ ...supported, recurrence: {
+    frequency: "weekly", interval: 1,
+  } }).success).toBe(false);
+
+  expect(await tool.execute(supported as never, context("telegram:42")))
+    .toMatchObject({ status: "ok", proposal: { recurrence: supported.recurrence } });
+  expect(tool.description).toContain("ask the Owner for a shorter end date or smaller occurrence count");
 });
 
 it("refuses Calendar Event creation when the executing caller is not the Owner", async () => {

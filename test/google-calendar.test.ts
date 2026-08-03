@@ -50,6 +50,62 @@ it("sends timed Events to Google as RFC3339 date-times", async () => {
   });
 });
 
+it("sends the approved bounded recurrence as one exact Google recurrence rule", async () => {
+  const googleFetch = vi.fn<typeof fetch>(async () => Response.json({ id: "series-id" }));
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  await adapter.createEvent!({
+    kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
+    endLocal: "2026-08-03T09:30", timeZone: "America/New_York",
+    location: null, description: null, idempotencyKey: "series-call",
+    recurrence: { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"],
+      end: { kind: "count", count: 8 } },
+  });
+
+  const body = JSON.parse(String(googleFetch.mock.calls[0]![1]?.body));
+  expect(body.recurrence).toEqual(["RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,TH;COUNT=8"]);
+});
+
+it("sends a date-bounded monthly recurrence without approximating it", async () => {
+  const googleFetch = vi.fn<typeof fetch>(async () => Response.json({ id: "series-id" }));
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  await adapter.createEvent!({
+    kind: "all-day", title: "Close books", startDate: "2026-08-31", throughDate: "2026-08-31",
+    timeZone: "UTC", location: null, description: null, idempotencyKey: "monthly",
+    recurrence: { frequency: "monthly", interval: 1,
+      end: { kind: "until", date: "2027-01-31" } },
+  });
+
+  expect(JSON.parse(String(googleFetch.mock.calls[0]![1]?.body)).recurrence)
+    .toEqual(["RRULE:FREQ=MONTHLY;INTERVAL=1;UNTIL=20270131"]);
+});
+
+it("converts a timed recurrence end date to the end of that local day", async () => {
+  const googleFetch = vi.fn<typeof fetch>(async () => Response.json({ id: "series-id" }));
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  await adapter.createEvent!({
+    kind: "timed", title: "Late practice", startLocal: "2026-08-03T23:30",
+    endLocal: "2026-08-04T00:00", timeZone: "America/Los_Angeles",
+    location: null, description: null, idempotencyKey: "until-local-day",
+    recurrence: { frequency: "daily", interval: 1,
+      end: { kind: "until", date: "2026-08-05" } },
+  });
+
+  expect(JSON.parse(String(googleFetch.mock.calls[0]![1]?.body)).recurrence)
+    .toEqual(["RRULE:FREQ=DAILY;INTERVAL=1;UNTIL=20260806T065959Z"]);
+});
+
 it("treats a retried identical Google Event insert as success", async () => {
   let insertedBody: unknown;
   const googleFetch = vi.fn<typeof fetch>(async (_input, init) => {
@@ -68,6 +124,7 @@ it("treats a retried identical Google Event insert as success", async () => {
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
     endLocal: "2026-08-03T09:30", timeZone: "America/New_York",
     location: null, description: null, idempotencyKey: "same-call",
+    recurrence: { frequency: "daily", interval: 1, end: { kind: "count", count: 5 } },
   })).resolves.toEqual({ eventId: expect.stringMatching(/^bud/) });
   expect(googleFetch).toHaveBeenCalledTimes(2);
 });

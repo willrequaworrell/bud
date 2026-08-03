@@ -12,6 +12,14 @@ type EventProposalWarning =
   | { kind: "starts-in-past"; message: "Starts in the past" }
   | { conflict: CalendarEvent; kind: "overlap"; message: string };
 
+export type RecurrenceWeekday = "MO" | "TU" | "WE" | "TH" | "FR" | "SA" | "SU";
+export type EventRecurrence = {
+  frequency: "daily" | "weekly" | "monthly";
+  interval: number;
+  weekdays?: RecurrenceWeekday[] | undefined;
+  end: { kind: "count"; count: number } | { kind: "until"; date: string };
+};
+
 type EventProposalDetails =
   | {
       conflictTimeZone: string;
@@ -19,6 +27,7 @@ type EventProposalDetails =
       endLocal: string;
       kind: "timed";
       location: string | null;
+      recurrence?: EventRecurrence | undefined;
       startLocal: string;
       timeZone: string;
       title: string;
@@ -29,6 +38,7 @@ type EventProposalDetails =
       description: string | null;
       kind: "all-day";
       location: string | null;
+      recurrence?: EventRecurrence | undefined;
       startDate: string;
       throughDate: string;
       timeZone: string;
@@ -94,6 +104,78 @@ function addDays(date: LocalDate, days: number): LocalDate {
     month: result.getUTCMonth() + 1,
     year: result.getUTCFullYear(),
   };
+}
+
+function daysBetween(start: LocalDate, end: LocalDate): number {
+  return (Date.UTC(end.year, end.month - 1, end.day) -
+    Date.UTC(start.year, start.month - 1, start.day)) / 86_400_000;
+}
+
+const weekdayCodes: readonly RecurrenceWeekday[] = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+
+function weekdayCode(date: LocalDate): RecurrenceWeekday {
+  return weekdayCodes[new Date(Date.UTC(date.year, date.month - 1, date.day)).getUTCDay()]!;
+}
+
+function recurrenceOccurrenceCount(
+  start: LocalDate,
+  recurrence: EventRecurrence,
+  until: LocalDate,
+  ceiling: number,
+): number {
+  let count = 0;
+  for (let offset = 0; offset <= daysBetween(start, until); offset += 1) {
+    const date = addDays(start, offset);
+    let occurs = false;
+    if (recurrence.frequency === "daily") {
+      occurs = offset % recurrence.interval === 0;
+    } else if (recurrence.frequency === "weekly") {
+      const startWeekday = weekdayCodes.indexOf(weekdayCode(start));
+      const week = Math.floor((offset + (startWeekday === 0 ? 6 : startWeekday - 1)) / 7);
+      const weekday = weekdayCode(date);
+      const selected = recurrence.weekdays?.length
+        ? recurrence.weekdays
+        : [weekdayCode(start)];
+      occurs = week % recurrence.interval === 0 && selected.includes(weekday);
+    } else {
+      const monthDistance = (date.year - start.year) * 12 + date.month - start.month;
+      occurs = date.day === start.day && monthDistance % recurrence.interval === 0;
+    }
+    if (offset === 0) occurs = true;
+    if (occurs && ++count > ceiling) return count;
+  }
+  return count;
+}
+
+function validateRecurrence(
+  recurrence: EventRecurrence | undefined,
+  startValue: string,
+  maxOccurrences: number,
+  maxDurationDays: number,
+): "invalid_recurrence" | "recurrence_too_large" | undefined {
+  if (!recurrence) return undefined;
+  if (!Number.isInteger(recurrence.interval) || recurrence.interval < 1) return "invalid_recurrence";
+  if (recurrence.frequency !== "weekly" && recurrence.weekdays !== undefined) return "invalid_recurrence";
+  if (recurrence.weekdays !== undefined &&
+      (recurrence.weekdays.length === 0 || new Set(recurrence.weekdays).size !== recurrence.weekdays.length ||
+       recurrence.weekdays.some((day) => !weekdayCodes.includes(day)))) return "invalid_recurrence";
+  const start = parseDate(startValue.slice(0, 10));
+  if (!start) return "invalid_recurrence";
+  if (recurrence.end.kind === "count") {
+    if (!Number.isInteger(recurrence.end.count) || recurrence.end.count < 1) return "invalid_recurrence";
+    if (recurrence.end.count > maxOccurrences) return "recurrence_too_large";
+    const lastAllowed = addDays(start, maxDurationDays);
+    if (recurrenceOccurrenceCount(start, recurrence, lastAllowed, recurrence.end.count) <
+        recurrence.end.count) return "recurrence_too_large";
+    return undefined;
+  }
+  const until = parseDate(recurrence.end.date);
+  if (!until || daysBetween(start, until) < 0) return "invalid_recurrence";
+  if (daysBetween(start, until) > maxDurationDays ||
+      recurrenceOccurrenceCount(start, recurrence, until, maxOccurrences) > maxOccurrences) {
+    return "recurrence_too_large";
+  }
+  return undefined;
 }
 
 function parseDate(value: string): LocalDate | undefined {
@@ -282,10 +364,12 @@ function failureReason(error: unknown): CalendarFailure {
 
 export function createCalendar(
   adapter: CalendarAdapter,
-  options: { now?: () => Date; maxRangeDays?: number } = {},
+  options: { now?: () => Date; maxRangeDays?: number; maxRecurrenceDays?: number; maxRecurrenceOccurrences?: number } = {},
 ) {
   const now = options.now ?? (() => new Date());
   const maxRangeDays = options.maxRangeDays ?? 31;
+  const maxRecurrenceDays = options.maxRecurrenceDays ?? 365;
+  const maxRecurrenceOccurrences = options.maxRecurrenceOccurrences ?? 100;
 
   async function readConflictWarnings(proposal: EventProposalDetails) {
     const interval = proposalInterval(proposal);
@@ -299,8 +383,8 @@ export function createCalendar(
 
   return {
     async prepareEvent(request:
-      | { kind: "timed"; title: string; startLocal: string; endLocal?: string | undefined; timeZone?: string | undefined; location?: string | undefined; description?: string | undefined }
-      | { kind: "all-day"; title: string; startDate: string; throughDate?: string | undefined; timeZone?: string | undefined; location?: string | undefined; description?: string | undefined }
+      | { kind: "timed"; title: string; startLocal: string; endLocal?: string | undefined; timeZone?: string | undefined; location?: string | undefined; description?: string | undefined; recurrence?: EventRecurrence | undefined }
+      | { kind: "all-day"; title: string; startDate: string; throughDate?: string | undefined; timeZone?: string | undefined; location?: string | undefined; description?: string | undefined; recurrence?: EventRecurrence | undefined }
     ) {
       const title = request.title.trim();
       if (!title) return { status: "error" as const, reason: "title_required" as const };
@@ -319,7 +403,18 @@ export function createCalendar(
         location: request.location?.trim() || null,
         timeZone,
         title,
+        ...(request.recurrence ? { recurrence: request.recurrence } : {}),
       };
+      const recurrenceFailure = validateRecurrence(
+        request.recurrence,
+        request.kind === "timed" ? request.startLocal : request.startDate,
+        maxRecurrenceOccurrences,
+        maxRecurrenceDays,
+      );
+      if (recurrenceFailure) {
+        return { status: "error" as const, reason: recurrenceFailure,
+          maxOccurrences: maxRecurrenceOccurrences, maxDurationDays: maxRecurrenceDays };
+      }
       let proposal: EventProposalDetails;
       if (request.kind === "timed") {
         const endLocal = request.endLocal ?? addMinutes(request.startLocal, 30);

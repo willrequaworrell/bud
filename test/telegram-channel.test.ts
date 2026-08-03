@@ -39,6 +39,7 @@ async function deliverWithSessionState(
 ) {
   const outbound: string[] = [];
   const authContexts: unknown[] = [];
+  const inputResponses: unknown[] = [];
   const model = vi.fn(async (message: string) => `Model: ${message}`);
   const telegramFetch = vi.fn<typeof fetch>(async (_request, init) => {
     const body = JSON.parse(String(init?.body)) as { text?: string };
@@ -53,6 +54,7 @@ async function deliverWithSessionState(
       authContexts.push(options.auth);
       const payload = input as { message?: string; inputResponses?: Array<{ requestId: string }> };
       if (payload.inputResponses) {
+        inputResponses.push(...payload.inputResponses);
         await (channel as any).adapter.deliver(payload, {
           state: options.state as TelegramChannelState,
           ctx: {},
@@ -73,7 +75,12 @@ async function deliverWithSessionState(
       return { getEventStream: async () => new ReadableStream({ start(controller) {
         if (pendingProposal) {
           controller.enqueue({ type: "input.requested", data: { requests: [{
-              action: { kind: "tool-call", toolName: proposalToolName, callId: "call", input: {} },
+              action: { kind: "tool-call", toolName: proposalToolName, callId: "call", input: {
+                proposal: { kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
+                  endLocal: "2026-08-03T09:30", timeZone: "UTC", recurrence: {
+                    frequency: "daily", interval: 1, end: { kind: "count", count: 5 },
+                  } },
+              } },
               requestId: "approval", prompt: "Approve?",
             }], sequence: 0, stepIndex: 0, turnId: "turn" } });
         }
@@ -98,7 +105,7 @@ async function deliverWithSessionState(
     }), args);
     await Promise.all(tasks.splice(0));
   }
-  return { authContexts, model, outbound };
+  return { authContexts, inputResponses, model, outbound };
 }
 
 async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
@@ -147,6 +154,33 @@ describe("Telegram Channel", () => {
         "Warning: Overlaps Team sync (Work)",
       ].join("\n"),
     });
+  });
+
+  it.each([
+    [{ frequency: "daily", interval: 1, end: { kind: "count", count: 5 } },
+      "Repeats: Every day; 5 occurrences"],
+    [{ frequency: "monthly", interval: 1, end: { kind: "until", date: "2027-01-31" } },
+      "Repeats: Every month; through 2027-01-31"],
+    [{ frequency: "weekly", interval: 2, weekdays: ["MO", "TH"],
+      end: { kind: "count", count: 8 } },
+      "Repeats: Every 2 weeks on Monday and Thursday; 8 occurrences"],
+  ] as const)("shows recurring Event cadence and boundary in the approval prompt",
+    async (recurrence, expected) => {
+    const post = vi.fn(async () => ({ id: "message-1", raw: null }));
+    await handleTelegramInputRequested({ requests: [{
+      action: { callId: "call-1", kind: "tool-call", toolName: "create_calendar_event",
+        input: { proposal: { kind: "timed", title: "Practice",
+          startLocal: "2026-08-03T09:00", endLocal: "2026-08-03T09:30",
+          timeZone: "America/New_York", location: null, description: null, warnings: [],
+          recurrence } } },
+      allowFreeform: false, display: "confirmation",
+      options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
+      prompt: "Approve?", requestId: "approval-1",
+    }] } as never, { state: {} as TelegramChannelState, telegram: { post } } as never, {} as never);
+
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({
+      text: expect.stringContaining(expected),
+    }));
   });
 
   it("shows every warning before offering approval when the Proposal needs multiple messages", async () => {
@@ -215,6 +249,14 @@ describe("Telegram Channel", () => {
   it("does not authenticate another sender's native approval callback", async () => {
     const result = await deliver(callbackUpdate(99, "eve:0"));
     expect(result.authContexts).toEqual([null]);
+  });
+
+  it("cancels a pending recurring Event Proposal without starting another model turn", async () => {
+    const result = await deliverWithActiveSession(true, callbackUpdate(42, "eve:1"));
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.inputResponses).toEqual([{
+      optionId: "selected", requestId: "telegram_callback:eve:1",
+    }]);
   });
 
   it.each([[99, "private"], [42, "group"]] as const)(

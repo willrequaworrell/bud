@@ -4,6 +4,7 @@ import {
   CalendarAdapterError,
   createCalendar,
   type CalendarAdapter,
+  type EventRecurrence,
 } from "../agent/lib/calendar.js";
 
 it("reads an exact local date through the configured Calendar timezone", async () => {
@@ -156,6 +157,80 @@ it("prepares a complete 30-minute timed Event Proposal without writing", async (
     },
   });
   expect(createEvent).not.toHaveBeenCalled();
+});
+
+it.each([
+  [{ frequency: "daily", interval: 1, end: { kind: "count", count: 5 } },
+    { frequency: "daily", interval: 1, end: { kind: "count", count: 5 } }],
+  [{ frequency: "weekly", interval: 2, weekdays: ["MO", "TH"], end: { kind: "until", date: "2026-10-01" } },
+    { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"], end: { kind: "until", date: "2026-10-01" } }],
+  [{ frequency: "monthly", interval: 1, end: { kind: "count", count: 4 } },
+    { frequency: "monthly", interval: 1, end: { kind: "count", count: 4 } }],
+] as const)("prepares a bounded recurring Event Proposal", async (recurrence, expected) => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "America/New_York"; },
+    async listEvents() { return []; },
+  }, { now: () => new Date("2026-07-31T15:00:00.000Z") });
+
+  expect(await calendar.prepareEvent({
+    kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
+    recurrence: recurrence as unknown as EventRecurrence,
+  })).toMatchObject({ status: "ok", proposal: { recurrence: expected } });
+});
+
+it.each([
+  [{ frequency: "daily", interval: 1, end: { kind: "count", count: 101 } }, "recurrence_too_large"],
+  [{ frequency: "weekly", interval: 1, end: { kind: "count", count: 100 } }, "recurrence_too_large"],
+  [{ frequency: "daily", interval: 1, end: { kind: "until", date: "2027-08-04" } }, "recurrence_too_large"],
+  [{ frequency: "weekly", interval: 0, weekdays: ["MO"], end: { kind: "count", count: 2 } }, "invalid_recurrence"],
+  [{ frequency: "monthly", interval: 1, weekdays: ["MO"], end: { kind: "count", count: 2 } }, "invalid_recurrence"],
+] as const)("rejects an invalid or over-limit recurrence", async (recurrence, reason) => {
+  const listEvents = vi.fn(async () => []);
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "UTC"; }, listEvents,
+  });
+
+  expect(await calendar.prepareEvent({
+    kind: "all-day", title: "Practice", startDate: "2026-08-03", recurrence,
+  } as never)).toEqual(expect.objectContaining({ status: "error", reason }));
+  expect(listEvents).not.toHaveBeenCalled();
+});
+
+it("creates exactly the approved recurrence with the retry key", async () => {
+  const createEvent = vi.fn(async () => ({ eventId: "series-1" }));
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "UTC"; }, async listEvents() { return []; }, createEvent,
+  });
+  const prepared = await calendar.prepareEvent({
+    kind: "all-day", title: "Practice", startDate: "2026-08-03",
+    recurrence: { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"],
+      end: { kind: "count", count: 8 } },
+  });
+  if (prepared.status !== "ok") throw new Error("expected proposal");
+
+  await calendar.createEvent(prepared.proposal, "same-call");
+  expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
+    recurrence: { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"],
+      end: { kind: "count", count: 8 } },
+    idempotencyKey: "same-call",
+  }));
+  await expect(calendar.createEvent({
+    ...prepared.proposal,
+    recurrence: { frequency: "weekly", interval: 1, weekdays: ["MO"],
+      end: { kind: "count", count: 8 } },
+  }, "same-call")).resolves.toEqual({ status: "error", reason: "proposal_changed" });
+});
+
+it("anchors interval weeks to Monday like the emitted Google recurrence rule", async () => {
+  const calendar = createCalendar({
+    async getDefaultTimeZone() { return "UTC"; }, async listEvents() { return []; },
+  }, { maxRecurrenceDays: 7 });
+
+  expect(await calendar.prepareEvent({
+    kind: "all-day", title: "Practice", startDate: "2026-08-05",
+    recurrence: { frequency: "weekly", interval: 2, weekdays: ["MO"],
+      end: { kind: "count", count: 2 } },
+  })).toEqual(expect.objectContaining({ status: "error", reason: "recurrence_too_large" }));
 });
 
 it("creates exactly an unchanged multi-day Event Proposal with a retry key", async () => {

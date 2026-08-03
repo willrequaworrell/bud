@@ -17,10 +17,16 @@ hash of the intended Event and an insert conflict is successful only when the
 existing Event carries the same hash. A Conversation permits one pending
 Proposal; unrelated text is refused until approval, denial, or reset.
 
+An Event Proposal may include one bounded recurrence rule. Supported recurrence
+is limited to daily, weekly, and monthly frequencies, positive intervals, and
+optional weekday selection for weekly rules. The Proposal contains the exact
+cadence and either an end date or occurrence count; the same identity and
+idempotency protections apply to that complete recurring Event write.
+
 ## Consequences
 
 Defaults and semantic validation occur before approval, while provider behavior
 remains outside the model. Every changed field needs a fresh Proposal and
 approval. Native channel approval UI is used first. Conflict detection,
-recurrence, attendees, conferencing, custom reminders, and selectable write
-destinations remain separate work.
+attendees, conferencing, custom reminders, and selectable write destinations
+remain separate work.

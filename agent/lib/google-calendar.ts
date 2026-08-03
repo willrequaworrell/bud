@@ -91,22 +91,54 @@ export function createGoogleCalendarAdapter(
     return `${part("year")}-${part("month")}-${part("day")}T${part("hour")}:${part("minute")}`;
   }
 
+  function recurrenceUntil(date: string, timeZone: string): string {
+    const [year, month, day] = date.split("-").map(Number);
+    const target = Date.UTC(year!, month! - 1, day!, 23, 59, 59);
+    let candidate = new Date(target);
+    for (let iteration = 0; iteration < 4; iteration += 1) {
+      const local = providerLocalTime(candidate.toISOString(), timeZone)!;
+      const [localDate, localTime] = local.split("T");
+      const [localYear, localMonth, localDay] = localDate!.split("-").map(Number);
+      const [localHour, localMinute] = localTime!.split(":").map(Number);
+      const actual = Date.UTC(localYear!, localMonth! - 1, localDay!, localHour!, localMinute!, 59);
+      const difference = target - actual;
+      if (difference === 0) break;
+      candidate = new Date(candidate.getTime() + difference);
+    }
+    return candidate.toISOString().replace(/[-:]/g, "").replace(".000", "");
+  }
+
   function matchesEvent(existing: unknown, event: CalendarEventWrite, id: string, proposalHash: string) {
     const prior = existing as {
       id?: string; summary?: string; location?: string; description?: string;
       start?: { date?: string; dateTime?: string }; end?: { date?: string; dateTime?: string };
-      reminders?: { useDefault?: boolean };
+      reminders?: { useDefault?: boolean }; recurrence?: string[];
       extendedProperties?: { private?: { budProposalHash?: string } };
     };
     const common = prior.id === id && prior.summary === event.title &&
       (prior.location ?? null) === event.location && (prior.description ?? null) === event.description &&
       prior.reminders?.useDefault === true &&
-      prior.extendedProperties?.private?.budProposalHash === proposalHash;
+      prior.extendedProperties?.private?.budProposalHash === proposalHash &&
+      JSON.stringify(prior.recurrence ?? []) === JSON.stringify(event.recurrence ? [recurrenceRule({
+        ...event, recurrence: event.recurrence,
+      })] : []);
     if (!common) return false;
     return event.kind === "all-day"
       ? prior.start?.date === event.startDate && prior.end?.date === nextDate(event.throughDate)
       : providerLocalTime(prior.start?.dateTime, event.timeZone) === event.startLocal &&
         providerLocalTime(prior.end?.dateTime, event.timeZone) === event.endLocal;
+  }
+
+  function recurrenceRule(event: CalendarEventWrite & { recurrence: NonNullable<CalendarEventWrite["recurrence"]> }): string {
+    const recurrence = event.recurrence;
+    const parts = [`FREQ=${recurrence.frequency.toUpperCase()}`, `INTERVAL=${recurrence.interval}`];
+    if (recurrence.weekdays?.length) parts.push(`BYDAY=${recurrence.weekdays.join(",")}`);
+    parts.push(recurrence.end.kind === "count"
+      ? `COUNT=${recurrence.end.count}`
+      : `UNTIL=${event.kind === "timed"
+          ? recurrenceUntil(recurrence.end.date, event.timeZone)
+          : recurrence.end.date.replaceAll("-", "")}`);
+    return `RRULE:${parts.join(";")}`;
   }
 
   async function createEvent(event: CalendarEventWrite) {
@@ -118,6 +150,9 @@ export function createGoogleCalendarAdapter(
         ? { start: { dateTime: googleDateTime(event.startLocal), timeZone: event.timeZone }, end: { dateTime: googleDateTime(event.endLocal), timeZone: event.timeZone } }
         : { start: { date: event.startDate }, end: { date: nextDate(event.throughDate) } }),
       reminders: { useDefault: true },
+      ...(event.recurrence ? { recurrence: [recurrenceRule(event as CalendarEventWrite & {
+        recurrence: NonNullable<CalendarEventWrite["recurrence"]>;
+      })] } : {}),
     };
     const proposalHash = createHash("sha256").update(JSON.stringify(details)).digest("hex");
     const body = {

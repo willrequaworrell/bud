@@ -39,7 +39,7 @@ An immutable, fully rendered intention to perform exactly one external write. Ap
 _Avoid_: Draft, confirmation
 
 **Event Proposal**:
-A Proposal for one non-recurring timed or all-day Event on the Write Calendar.
+A Proposal for one timed or all-day Event, optionally with one bounded recurrence rule, on the Write Calendar.
 _Avoid_: Calendar draft
 
 **Tasks**:

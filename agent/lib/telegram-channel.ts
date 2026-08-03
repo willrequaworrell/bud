@@ -70,6 +70,29 @@ function eventProposalApprovalPrompt(input: unknown): string | undefined {
   }
 
   const details = [proposal.title, `When: ${when}`];
+  const recurrence = record(proposal.recurrence);
+  const recurrenceEnd = record(recurrence?.end);
+  if (recurrence && recurrenceEnd && typeof recurrence.frequency === "string" &&
+      typeof recurrence.interval === "number") {
+    const weekdays = Array.isArray(recurrence.weekdays)
+      ? recurrence.weekdays.filter((day): day is string => typeof day === "string") : [];
+    const weekdayNames: Record<string, string> = {
+      MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday",
+      FR: "Friday", SA: "Saturday", SU: "Sunday",
+    };
+    const cadence = recurrence.interval === 1
+      ? `Every ${{ daily: "day", weekly: "week", monthly: "month" }[recurrence.frequency] ?? recurrence.frequency}`
+      : `Every ${recurrence.interval} ${recurrence.frequency === "daily" ? "days" :
+          recurrence.frequency === "weekly" ? "weeks" : "months"}`;
+    const onDays = weekdays.length
+      ? ` on ${weekdays.map((day) => weekdayNames[day] ?? day).join(weekdays.length === 2 ? " and " : ", ")}`
+      : "";
+    const boundary = recurrenceEnd.kind === "count" && typeof recurrenceEnd.count === "number"
+      ? `${recurrenceEnd.count} occurrences`
+      : recurrenceEnd.kind === "until" && typeof recurrenceEnd.date === "string"
+        ? `through ${recurrenceEnd.date}` : undefined;
+    if (boundary) details.push(`Repeats: ${cadence}${onDays}; ${boundary}`);
+  }
   if (typeof proposal.location === "string") details.push(`Location: ${proposal.location}`);
   if (typeof proposal.description === "string") details.push(`Description: ${proposal.description}`);
   const warnings = Array.isArray(proposal.warnings)
