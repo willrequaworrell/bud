@@ -34,6 +34,7 @@ function callbackUpdate(senderId: number, data: string) {
 async function deliverWithSessionState(
   activeSession: boolean,
   pendingProposal: boolean | "resolved",
+  proposalToolName = "create_calendar_event",
   ...updates: unknown[]
 ) {
   const outbound: string[] = [];
@@ -72,13 +73,13 @@ async function deliverWithSessionState(
       return { getEventStream: async () => new ReadableStream({ start(controller) {
         if (pendingProposal) {
           controller.enqueue({ type: "input.requested", data: { requests: [{
-              action: { kind: "tool-call", toolName: "create_calendar_event", callId: "call", input: {} },
+              action: { kind: "tool-call", toolName: proposalToolName, callId: "call", input: {} },
               requestId: "approval", prompt: "Approve?",
             }], sequence: 0, stepIndex: 0, turnId: "turn" } });
         }
         if (pendingProposal === "resolved") {
           controller.enqueue({ type: "action.result", data: {
-            result: { kind: "tool-result", callId: "call", toolName: "create_calendar_event", output: {} },
+            result: { kind: "tool-result", callId: "call", toolName: proposalToolName, output: {} },
             sequence: 0, stepIndex: 0, turnId: "turn", status: "completed",
           } });
         }
@@ -101,7 +102,7 @@ async function deliverWithSessionState(
 }
 
 async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
-  return deliverWithSessionState(activeSession, activeSession, ...updates);
+  return deliverWithSessionState(activeSession, activeSession, "create_calendar_event", ...updates);
 }
 
 async function deliver(...updates: unknown[]) {
@@ -176,6 +177,22 @@ describe("Telegram Channel", () => {
     expect(messages.at(-1)?.reply_markup).toBeDefined();
   });
 
+  it.each([
+    [{ title: "Buy milk", notes: "Get oat milk", dueDate: "2026-08-03" },
+      ["Create Task?", "", "Buy milk", "Due: 2026-08-03", "Notes: Get oat milk"]],
+    [{ title: "Call Sam", notes: null, dueDate: null },
+      ["Create Task?", "", "Call Sam", "Due: No due date"]],
+  ] as const)("shows exactly the dated or undated Task in its approval prompt", async (proposal, lines) => {
+    const post = vi.fn(async () => ({ id: "message-1", raw: null }));
+    await handleTelegramInputRequested({ requests: [{
+      action: { callId: "call-1", input: { proposal }, kind: "tool-call", toolName: "create_task" },
+      allowFreeform: false, display: "confirmation",
+      options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
+      prompt: "Approve tool call: create_task", requestId: "approval-1",
+    }] } as never, { state: {} as TelegramChannelState, telegram: { post } } as never, {} as never);
+    expect(post).toHaveBeenCalledWith(expect.objectContaining({ text: lines.join("\n") }));
+  });
+
   it("routes Calendar language through Eve instead of intercepting it", async () => {
     const result = await deliver(update(42, "What's on my calendar Thursday?"));
     expect(result.model).toHaveBeenCalledWith("What's on my calendar Thursday?");
@@ -229,14 +246,33 @@ describe("Telegram Channel", () => {
   });
 
   it("does not label an ordinary active turn as a pending Proposal", async () => {
-    const result = await deliverWithSessionState(true, false, update(42, "One more detail"));
+    const result = await deliverWithSessionState(
+      true, false, "create_calendar_event", update(42, "One more detail"),
+    );
     expect(result.model).toHaveBeenCalledWith("One more detail");
     expect(result.outbound).toEqual(["Model: One more detail"]);
   });
 
   it("does not treat a resolved Event approval in history as pending", async () => {
-    const result = await deliverWithSessionState(true, "resolved", update(42, "Thanks"));
+    const result = await deliverWithSessionState(true, "resolved", "create_calendar_event", update(42, "Thanks"));
     expect(result.model).toHaveBeenCalledWith("Thanks");
     expect(result.outbound).toEqual(["Model: Thanks"]);
+  });
+
+  it("refuses unrelated text while a Task Proposal is pending", async () => {
+    const result = await deliverWithSessionState(
+      true, true, "create_task", update(42, "What is the weather?"),
+    );
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([
+      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+    ]);
+  });
+
+  it("allows a new request after a Task Proposal is denied or approved", async () => {
+    const result = await deliverWithSessionState(
+      true, "resolved", "create_task", update(42, "Thanks"),
+    );
+    expect(result.model).toHaveBeenCalledWith("Thanks");
   });
 });

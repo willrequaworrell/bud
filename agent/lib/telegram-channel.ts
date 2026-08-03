@@ -82,6 +82,28 @@ function eventProposalApprovalPrompt(input: unknown): string | undefined {
     .join("\n");
 }
 
+function taskProposalApprovalPrompt(input: unknown): string | undefined {
+  const proposal = record(record(input)?.proposal);
+  if (!proposal || typeof proposal.title !== "string" ||
+      !(proposal.dueDate === null || typeof proposal.dueDate === "string") ||
+      !(proposal.notes === null || typeof proposal.notes === "string")) return undefined;
+  return [
+    "Create Task?", "", proposal.title,
+    `Due: ${proposal.dueDate ?? "No due date"}`,
+    ...(proposal.notes ? [`Notes: ${proposal.notes}`] : []),
+  ].join("\n");
+}
+
+function proposalApprovalPrompt(toolName: string, input: unknown) {
+  if (toolName.endsWith("create_calendar_event")) return eventProposalApprovalPrompt(input);
+  if (toolName.endsWith("create_task")) return taskProposalApprovalPrompt(input);
+  return undefined;
+}
+
+function isProposalCreationTool(toolName: string) {
+  return toolName.endsWith("create_calendar_event") || toolName.endsWith("create_task");
+}
+
 function approvalPromptChunks(prompt: string): string[] {
   const characters = Array.from(prompt);
   const chunks: string[] = [];
@@ -95,9 +117,7 @@ export const handleTelegramInputRequested: NonNullable<
   TelegramChannelEvents["input.requested"]
 > = async (data, channel) => {
   for (const request of data.requests) {
-    const prompt = request.action.toolName.endsWith("create_calendar_event")
-      ? eventProposalApprovalPrompt(request.action.input)
-      : undefined;
+    const prompt = proposalApprovalPrompt(request.action.toolName, request.action.input);
     const chunks = prompt ? approvalPromptChunks(prompt) : [request.prompt];
     for (const chunk of chunks.slice(0, -1)) {
       await channel.telegram.post({ text: chunk });
@@ -132,8 +152,8 @@ function completedSyntheticSession(requestId: string): Session {
   };
 }
 
-async function hasPendingEventProposal(args: RouteHandlerArgs<TelegramChannelState>, sessionId: string) {
-  const stream = await args.getSession(sessionId).getEventStream({ startIndex: -20 });
+async function hasPendingProposal(args: RouteHandlerArgs<TelegramChannelState>, sessionId: string) {
+  const stream = await args.getSession(sessionId).getEventStream({ startIndex: 0 });
   const reader = stream.getReader();
   const pendingCallIds = new Set<string>();
   try {
@@ -142,7 +162,7 @@ async function hasPendingEventProposal(args: RouteHandlerArgs<TelegramChannelSta
       if (done) return pendingCallIds.size > 0;
       if (value.type === "input.requested") {
         for (const request of value.data.requests) {
-          if (request.action.toolName.endsWith("create_calendar_event")) {
+          if (isProposalCreationTool(request.action.toolName)) {
             pendingCallIds.add(request.action.callId);
           }
         }
@@ -241,7 +261,7 @@ export function createBudTelegramChannel(
           const active = await args.resolveActiveSession({
             continuationToken: options.continuationToken,
           });
-          if (!active || !await hasPendingEventProposal(args, active.sessionId)) {
+          if (!active || !await hasPendingProposal(args, active.sessionId)) {
             return args.send(input, options);
           }
           await sendTelegramMessage({

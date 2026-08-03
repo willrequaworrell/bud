@@ -79,6 +79,21 @@ Calendar; Deny writes nothing. A changed conflict requires a fresh Proposal and
 approval. While approval is pending, resolve it or use `/reset` before starting
 another request.
 
+## Task creation
+
+Bud prepares an immutable Task Proposal containing a required title, optional
+notes, and either a date-only due date or `No due date`. Telegram displays every
+field before Eve's native approval buttons. Approve writes exactly that Proposal
+to the configured Tasks list; Deny writes nothing. Revisions require a new
+Proposal and approval, and the same one-pending-Proposal Conversation rule used
+by Calendar Events applies.
+
+Google Tasks cannot retain a due time. When a Task request includes a specific
+time, Bud explains the limitation and offers a Calendar Event instead of silently
+discarding the time. Google Tasks also has no native idempotency key; Eve's
+durable execution state is the primary retry protection, with a narrowly bounded
+exact-match lookup only after an ambiguous Google insert outcome.
+
 ## Verification
 
 ```sh

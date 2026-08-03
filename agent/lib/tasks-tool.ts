@@ -1,7 +1,48 @@
 import { defineTool, type ToolContext } from "eve/tools";
+import { always } from "eve/tools/approval";
 import { z } from "zod";
 
-import { groupTasks, TasksAdapterError, type TasksAdapter } from "./tasks.js";
+import { createTasks, groupTasks, TasksAdapterError, type TasksAdapter } from "./tasks.js";
+
+const taskDetailsSchema = z.object({
+  title: z.string(),
+  notes: z.string().trim().min(1).optional(),
+  dueDate: z.iso.date().optional(),
+});
+
+const taskProposalSchema = z.object({
+  title: z.string(), notes: z.string().nullable(), dueDate: z.iso.date().nullable(),
+  proposalId: z.string().length(64),
+});
+
+function isOwner(ctx: ToolContext, ownerId: string) {
+  return ctx.session.auth.current?.principalId === `telegram:${ownerId}`;
+}
+
+export function createPrepareTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
+  const tasks = createTasks(options.adapter);
+  return defineTool({
+    description: "Prepare one complete immutable Task Proposal. The title is required; notes and a date-only due date are optional. Never infer a due date. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
+    inputSchema: taskDetailsSchema,
+    async execute(input, ctx: ToolContext) {
+      if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
+      return tasks.prepareTask(input);
+    },
+  });
+}
+
+export function createCreateTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
+  const tasks = createTasks(options.adapter);
+  return defineTool({
+    description: "Create exactly one previously prepared Task. Never alter Proposal fields. Every call requires Owner approval.",
+    inputSchema: z.object({ proposal: taskProposalSchema }),
+    approval: always(),
+    async execute(input, ctx: ToolContext) {
+      if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
+      return tasks.createTask(input.proposal, ctx.callId);
+    },
+  });
+}
 
 function localDate(now: Date, timeZone: string): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -20,7 +61,7 @@ export function createListIncompleteTasksTool(options: {
     description: "List incomplete Tasks from the Owner's configured Tasks list. Use for an unqualified request for Tasks. Results are grouped as overdue, upcoming (including today), and undated. If truncated is true, tell the Owner more Tasks exist and suggest a narrower request.",
     inputSchema: z.object({}),
     async execute(_input, ctx: ToolContext) {
-      if (ctx.session.auth.current?.principalId !== `telegram:${options.ownerId}`) {
+      if (!isOwner(ctx, options.ownerId)) {
         return { status: "error" as const, reason: "forbidden" as const };
       }
       try {
