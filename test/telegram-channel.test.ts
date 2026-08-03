@@ -7,6 +7,7 @@ import {
   createBudTelegramChannel,
   handleTelegramInputRequested,
 } from "../agent/lib/telegram-channel.js";
+import type { TranscriptionAdapter } from "../agent/lib/transcription.js";
 
 const config: BudConfig = {
   assistantName: "Bud", googleCalendarId: "primary", googleOAuthClientId: "client",
@@ -16,6 +17,9 @@ const config: BudConfig = {
   modelId: "test/deterministic", ownerId: "42", telegramBotToken: "bot",
   telegramWebhookSecret: "webhook",
   tasksResultLimit: 25,
+  transcriptionMaxBytes: 10 * 1024 * 1024,
+  transcriptionMaxDurationSeconds: 5 * 60,
+  transcriptionModel: "test-transcriber",
 };
 
 function update(senderId: number, text: string, chatType: "private" | "group" = "private") {
@@ -29,6 +33,93 @@ function callbackUpdate(senderId: number, data: string) {
     from: { id: senderId, is_bot: false, first_name: "Sender" },
     message: { message_id: 8, date: 0, chat: { id: senderId, type: "private" },
       from: { id: 100, is_bot: true, first_name: "Bud" }, text: "Approve?" } } };
+}
+
+function mediaUpdate(
+  field: "audio" | "document" | "photo" | "video" | "voice",
+  value: unknown,
+  senderId = 42,
+) {
+  return { update_id: 3, message: { message_id: 9, date: 0,
+    chat: { id: senderId, type: "private" },
+    from: { id: senderId, is_bot: false, first_name: "Sender" }, [field]: value } };
+}
+
+async function deliverMedia(
+  body: unknown,
+  transcription: TranscriptionAdapter = { transcribe: vi.fn(async () => "What's next today?") },
+  mediaOptions: {
+    config?: BudConfig;
+    downloadResponse?: () => Response;
+    pendingProposal?: boolean;
+    proposal?: "task";
+  } = {},
+) {
+  const outbound: string[] = [];
+  const model = vi.fn(async (message: string) => `Model: ${message}`);
+  const telegramFetch = vi.fn<typeof fetch>(async (request, init) => {
+    const url = String(request);
+    if (url.includes("/getFile")) {
+      return Response.json({ ok: true, result: { file_path: "voice/file.ogg" } });
+    }
+    if (url.includes("/file/")) return mediaOptions.downloadResponse?.() ??
+      new Response(new Uint8Array([1, 2, 3]));
+    const requestBody = JSON.parse(String(init?.body)) as { text?: string };
+    if (requestBody.text) outbound.push(requestBody.text);
+    return Response.json({ ok: true, result: { message_id: 8, chat: { id: 42, type: "private" } } });
+  });
+  const channelConfig = mediaOptions.config ?? config;
+  const channel = createBudTelegramChannel(channelConfig, { telegramFetch, transcription });
+  const route = channel.routes[0]!;
+  const tasks: Promise<unknown>[] = [];
+  const send = vi.fn(async (input, sendOptions) => {
+    const payload = input as { message: string };
+    const runtime = {
+      state: sendOptions.state, ctx: {}, session: {
+        continuationToken: sendOptions.continuationToken, setContinuationToken() {},
+      },
+    };
+    const telegram = (channel as any).adapter.createAdapterContext(runtime).telegram;
+    const reply = await model(payload.message);
+    if (mediaOptions.proposal === "task") {
+      await handleTelegramInputRequested({ requests: [{
+        action: { callId: "call-voice", kind: "tool-call", toolName: "create_task",
+          input: { proposal: { title: "Buy milk", dueDate: null, notes: null,
+            proposalId: "immutable-proposal" } } },
+        allowFreeform: false, display: "confirmation",
+        options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
+        prompt: "Approve?", requestId: "approval-voice",
+      }] } as never, { state: sendOptions.state, telegram } as never, {} as never);
+    } else {
+      await telegram.sendMessage(reply);
+    }
+    return { id: "session" } as Session;
+  });
+  await route.handler(new Request("https://bud.test/eve/v1/telegram", {
+    method: "POST", headers: { "content-type": "application/json",
+      "x-telegram-bot-api-secret-token": config.telegramWebhookSecret },
+    body: JSON.stringify(body),
+  }), {
+    send, waitUntil(task: Promise<unknown>) { tasks.push(task); },
+    async resolveActiveSession() {
+      return mediaOptions.pendingProposal ? { sessionId: "session" } : undefined;
+    },
+    getSession() {
+      return { getEventStream: async () => new ReadableStream({ start(controller) {
+        controller.enqueue({ type: "input.requested", data: { requests: [{
+          action: { kind: "tool-call", toolName: "create_task", callId: "pending-call",
+            input: { proposal: { title: "Existing", dueDate: null, notes: null } } },
+          requestId: "pending-approval", prompt: "Approve?",
+        }], sequence: 0, stepIndex: 0, turnId: "turn" } });
+        controller.enqueue({ type: "session.waiting", data: {
+          continuationToken: "token", wait: "next-user-message",
+        } });
+        controller.close();
+      } }) } as Session;
+    },
+  } as unknown as RouteHandlerArgs<TelegramChannelState>);
+  await Promise.all(tasks);
+  return { model, outbound, send, telegramFetch, transcription };
 }
 
 async function deliverWithSessionState(
@@ -46,7 +137,7 @@ async function deliverWithSessionState(
     if (body.text) outbound.push(body.text);
     return Response.json({ ok: true, result: { message_id: 8, chat: { id: 42, type: "private" } } });
   });
-  const channel = createBudTelegramChannel(config, telegramFetch);
+  const channel = createBudTelegramChannel(config, { telegramFetch });
   const route = channel.routes[0]!;
   const tasks: Promise<unknown>[] = [];
   const args = {
@@ -117,6 +208,100 @@ async function deliver(...updates: unknown[]) {
 }
 
 describe("Telegram Channel", () => {
+  it("downloads and transcribes an Owner voice note before Eve interpretation", async () => {
+    const transcription = { transcribe: vi.fn(async () => "What's next today?") };
+    const result = await deliverMedia(mediaUpdate("voice", {
+      duration: 12, file_id: "voice-1", file_size: 1024, mime_type: "audio/ogg",
+    }), transcription);
+
+    expect(transcription.transcribe).toHaveBeenCalledWith({
+      bytes: expect.any(Uint8Array), fileName: "voice.ogg", mediaType: "audio/ogg",
+      model: "test-transcriber",
+    });
+    expect(result.model).toHaveBeenCalledWith("What's next today?");
+    expect(result.outbound).toEqual(["I heard: What's next today?", "Model: What's next today?"]);
+  });
+
+  it("makes the transcript visible on a voice-created Proposal before approval", async () => {
+    const result = await deliverMedia(mediaUpdate("voice", {
+      duration: 8, file_id: "voice-2", file_size: 800, mime_type: "audio/ogg",
+    }), { transcribe: vi.fn(async () => "Create a task to buy milk") }, { proposal: "task" });
+
+    expect(result.outbound[0]).toBe("I heard: Create a task to buy milk");
+    expect(result.model).toHaveBeenCalledWith("Create a task to buy milk");
+    expect(result.outbound[1]).toContain("Create Task?\n\nBuy milk\nDue: No due date");
+  });
+
+  it("accepts voice notes when Telegram omits optional size and media type", async () => {
+    const result = await deliverMedia(mediaUpdate("voice", {
+      duration: 8, file_id: "voice-optional-metadata",
+    }));
+    expect(result.model).toHaveBeenCalledWith("What's next today?");
+  });
+
+  it("preserves pending-Proposal serialization for transcribed voice input", async () => {
+    const result = await deliverMedia(mediaUpdate("voice", {
+      duration: 8, file_id: "voice-pending", file_size: 800, mime_type: "audio/ogg",
+    }), undefined, { pendingProposal: true });
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.send).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([
+      "I heard: What's next today?",
+      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+    ]);
+  });
+
+  it.each([
+    ["too large", { duration: 10, file_id: "voice", file_size: 10 * 1024 * 1024 + 1,
+      mime_type: "audio/ogg" }],
+    ["too long", { duration: 301, file_id: "voice", file_size: 100, mime_type: "audio/ogg" }],
+    ["unsupported format", { duration: 10, file_id: "voice", file_size: 100,
+      mime_type: "audio/x-unknown" }],
+  ])("rejects a %s voice note before download or interpretation", async (_name, voice) => {
+    const result = await deliverMedia(mediaUpdate("voice", voice));
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.transcription.transcribe).not.toHaveBeenCalled();
+    expect(result.telegramFetch.mock.calls.some(([request]) => String(request).includes("/getFile")))
+      .toBe(false);
+    expect(result.outbound).toEqual([expect.stringContaining("type your request")]);
+  });
+
+  it("turns download or transcription failure into typed-input guidance without Eve", async () => {
+    const result = await deliverMedia(mediaUpdate("voice", {
+      duration: 10, file_id: "voice", file_size: 100, mime_type: "audio/ogg",
+    }), { transcribe: vi.fn(async () => { throw new Error("provider failed"); }) });
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.send).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([expect.stringContaining("type your request")]);
+  });
+
+  it.each([
+    ["HTTP failure", () => new Response("unavailable", { status: 503 }), config],
+    ["streamed size overflow", () => new Response(new Uint8Array(1025)), {
+      ...config, transcriptionMaxBytes: 1024,
+    }],
+  ] as const)("stops a voice note after %s without Eve", async (_name, response, channelConfig) => {
+    const result = await deliverMedia(mediaUpdate("voice", {
+      duration: 10, file_id: "voice", file_size: 100, mime_type: "audio/ogg",
+    }), undefined, { config: channelConfig, downloadResponse: response });
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.send).not.toHaveBeenCalled();
+    expect(result.transcription.transcribe).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([expect.stringContaining("type your request")]);
+  });
+
+  it.each([
+    ["photo", [{ file_id: "photo", file_size: 100, width: 10, height: 10 }]],
+    ["document", { file_id: "document", file_size: 100, file_name: "notes.pdf" }],
+    ["video", { file_id: "video", file_size: 100, duration: 2 }],
+    ["audio", { file_id: "audio", file_size: 100, duration: 2 }],
+  ] as const)("rejects unsupported %s without interpretation", async (kind, value) => {
+    const result = await deliverMedia(mediaUpdate(kind, value));
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.send).not.toHaveBeenCalled();
+    expect(result.transcription.transcribe).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual(["I can only handle text and Telegram voice notes. Please type your request."]);
+  });
   it("shows Event details and conflict warnings in the approval prompt", async () => {
     const post = vi.fn(async () => ({ id: "message-1", raw: null }));
     const state = {} as TelegramChannelState;

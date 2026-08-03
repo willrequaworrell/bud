@@ -1,8 +1,8 @@
 # Bud
 
-Bud is a private Telegram assistant built with Eve. This first slice accepts
-text messages only from one configured owner in a private chat and denies all
-other Telegram messages before model execution.
+Bud is a private Telegram assistant built with Eve. It accepts text and bounded
+Telegram voice notes from one configured Owner in a private chat and denies all
+other senders and unsupported media before model execution.
 
 ## Requirements
 
@@ -10,6 +10,7 @@ other Telegram messages before model execution.
 - A Telegram bot token and webhook secret
 - OAuth credentials and an offline refresh token for one personal Google account
 - A Vercel AI Gateway credential available to Eve
+- An OpenAI API key when voice-note transcription is enabled
 
 Copy `.env.example` to `.env`, fill in the Telegram and Google OAuth values, then
 run:
@@ -26,11 +27,25 @@ Register the deployed webhook with Telegram at
 ## Security boundary
 
 `TELEGRAM_OWNER_ID` must be the owner's positive numeric Telegram user ID.
-Group chats, channels, bots, senders with any other ID, attachments, and empty
-messages are dropped by the channel before Eve creates a model turn. Shell,
+Group chats, channels, bots, senders with any other ID, unsupported attachments,
+and empty messages are stopped before Eve creates a model turn. Shell,
 filesystem, web fetch/search, and delegation tools are disabled explicitly.
 
 Configuration errors name invalid variables but never include their values.
+
+## Voice notes
+
+Owner voice notes are downloaded from Telegram and sent through a replaceable
+transcription adapter before Eve sees the recognized text. Bud immediately shows
+`I heard: …`, then handles the transcript in the same durable Conversation and
+approval flow as typed input. The default OpenAI adapter uses `OPENAI_API_KEY` and
+`gpt-4o-mini-transcribe`; override the model with `BUD_TRANSCRIPTION_MODEL`.
+
+Voice notes default to a 10 MB and five-minute limit. Override these with
+`TELEGRAM_VOICE_MAX_BYTES` and `TELEGRAM_VOICE_MAX_DURATION_SECONDS`. Invalid,
+oversized, unsupported, failed, or empty transcriptions stop at the channel and
+ask for typed input, so they cannot trigger Calendar or Tasks operations. Photos,
+documents, video, ordinary audio, and other media are unsupported.
 
 ## Calendar reads
 

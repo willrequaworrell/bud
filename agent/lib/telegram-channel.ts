@@ -12,6 +12,7 @@ import type { RouteHandlerArgs, Session } from "eve/channels";
 
 import type { BudConfig } from "./config.js";
 import { isOwnerPrivateText } from "./telegram-policy.js";
+import { preprocessTelegramMedia, type TelegramMediaDependencies } from "./telegram-media.js";
 
 const RESET_REQUEST_PREFIX = "bud:conversation-reset:";
 const REFUSED_REQUEST_PREFIX = "bud:pending-proposal-refused:";
@@ -233,8 +234,9 @@ function ownerCallbackAuth(state: TelegramChannelState, ownerId: string) {
 
 export function createBudTelegramChannel(
   channelConfig: BudConfig,
-  telegramFetch?: typeof fetch,
+  dependencies: TelegramMediaDependencies = {},
 ): TelegramChannel {
+  const { telegramFetch } = dependencies;
   const channel = telegramChannel({
     ...(telegramFetch ? { api: { fetch: telegramFetch } } : {}),
     credentials: {
@@ -268,8 +270,10 @@ export function createBudTelegramChannel(
   const route = compiled.routes[0];
   if (route?.transport !== "http") throw new Error("Telegram route is missing");
   const handleTelegramRequest = route.handler;
-  route.handler = (request, args) =>
-    handleTelegramRequest(request, {
+  route.handler = async (request, args) => {
+    const processedRequest = await preprocessTelegramMedia(request, channelConfig, dependencies);
+    if (processedRequest instanceof Response) return processedRequest;
+    return handleTelegramRequest(processedRequest, {
       ...args,
       async send(input, options) {
         const message =
@@ -316,6 +320,7 @@ export function createBudTelegramChannel(
         );
       },
     });
+  };
 
   return channel;
 }

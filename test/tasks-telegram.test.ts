@@ -17,6 +17,9 @@ const config: BudConfig = {
   googleOAuthRefreshToken: "refresh", googleTasksListId: "private-list-id",
   modelId: "test/deterministic", ownerId: "42", tasksResultLimit: 25,
   telegramBotToken: "bot", telegramWebhookSecret: "webhook",
+  transcriptionMaxBytes: 10 * 1024 * 1024,
+  transcriptionMaxDurationSeconds: 5 * 60,
+  transcriptionModel: "test-transcriber",
 };
 
 function render(result: Awaited<ReturnType<ReturnType<typeof createListIncompleteTasksTool>["execute"]>>) {
@@ -56,7 +59,7 @@ async function askForTasks(adapter: TasksAdapter) {
     expect(JSON.stringify(toolResults)).not.toContain(config.googleTasksListId);
     return render(toolResults.at(-1)!.output as Awaited<ReturnType<typeof tool.execute>>);
   });
-  const channel = createBudTelegramChannel(config, telegramFetch);
+  const channel = createBudTelegramChannel(config, { telegramFetch });
   const pending: Promise<unknown>[] = [];
   const args = {
     async send(input: unknown, options: { state: TelegramChannelState }) {

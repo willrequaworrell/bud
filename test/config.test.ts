@@ -37,6 +37,9 @@ describe("configuration", () => {
       googleTasksListId: "@default",
       modelId: "openai/gpt-5.4-mini",
       tasksResultLimit: 25,
+      transcriptionMaxBytes: 10 * 1024 * 1024,
+      transcriptionMaxDurationSeconds: 5 * 60,
+      transcriptionModel: "gpt-4o-mini-transcribe",
     });
     expect(
       loadConfig({
@@ -48,6 +51,32 @@ describe("configuration", () => {
       assistantName: "Sprout",
       modelId: "anthropic/claude-haiku-4.5",
     });
+  });
+
+  it("configures bounded voice-note transcription", () => {
+    const required = {
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+      GOOGLE_OAUTH_REFRESH_TOKEN: "refresh-token",
+      TELEGRAM_OWNER_ID: "42",
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "webhook-secret",
+    };
+
+    expect(loadConfig({
+      ...required,
+      BUD_TRANSCRIPTION_MODEL: "custom-transcriber",
+      TELEGRAM_VOICE_MAX_BYTES: "2048",
+      TELEGRAM_VOICE_MAX_DURATION_SECONDS: "45",
+    })).toMatchObject({
+      transcriptionMaxBytes: 2048,
+      transcriptionMaxDurationSeconds: 45,
+      transcriptionModel: "custom-transcriber",
+    });
+    expect(() => loadConfig({ ...required, TELEGRAM_VOICE_MAX_BYTES: "0" }))
+      .toThrowError("TELEGRAM_VOICE_MAX_BYTES must be a positive integer");
+    expect(() => loadConfig({ ...required, TELEGRAM_VOICE_MAX_DURATION_SECONDS: "1.5" }))
+      .toThrowError("TELEGRAM_VOICE_MAX_DURATION_SECONDS must be a positive integer");
   });
 
   it("configures one Google Tasks list and a bounded result limit", () => {

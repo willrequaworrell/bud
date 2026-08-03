@@ -11,6 +11,9 @@ export interface BudConfig {
   telegramBotToken: string;
   telegramWebhookSecret: string;
   tasksResultLimit: number;
+  transcriptionMaxBytes: number;
+  transcriptionMaxDurationSeconds: number;
+  transcriptionModel: string;
 }
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -18,6 +21,9 @@ type Environment = Readonly<Record<string, string | undefined>>;
 const DEFAULT_ASSISTANT_NAME = "Bud";
 const DEFAULT_MODEL_ID = "openai/gpt-5.4-mini";
 const DEFAULT_TASKS_RESULT_LIMIT = 25;
+const DEFAULT_TRANSCRIPTION_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_TRANSCRIPTION_MAX_DURATION_SECONDS = 5 * 60;
+const DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
 
 export function loadConfig(environment: Environment = process.env): BudConfig {
   const errors: string[] = [];
@@ -37,6 +43,12 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   const tasksResultLimit = environment.GOOGLE_TASKS_RESULT_LIMIT === undefined
     ? DEFAULT_TASKS_RESULT_LIMIT
     : Number(environment.GOOGLE_TASKS_RESULT_LIMIT);
+  const transcriptionMaxBytes = environment.TELEGRAM_VOICE_MAX_BYTES === undefined
+    ? DEFAULT_TRANSCRIPTION_MAX_BYTES : Number(environment.TELEGRAM_VOICE_MAX_BYTES);
+  const transcriptionMaxDurationSeconds =
+    environment.TELEGRAM_VOICE_MAX_DURATION_SECONDS === undefined
+      ? DEFAULT_TRANSCRIPTION_MAX_DURATION_SECONDS
+      : Number(environment.TELEGRAM_VOICE_MAX_DURATION_SECONDS);
   const ownerId = environment.TELEGRAM_OWNER_ID?.trim();
   const telegramBotToken = environment.TELEGRAM_BOT_TOKEN?.trim();
   const telegramWebhookSecret =
@@ -53,6 +65,12 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   }
   if (!Number.isInteger(tasksResultLimit) || tasksResultLimit < 1 || tasksResultLimit > 100) {
     errors.push("GOOGLE_TASKS_RESULT_LIMIT must be an integer from 1 to 100");
+  }
+  if (!Number.isInteger(transcriptionMaxBytes) || transcriptionMaxBytes < 1) {
+    errors.push("TELEGRAM_VOICE_MAX_BYTES must be a positive integer");
+  }
+  if (!Number.isInteger(transcriptionMaxDurationSeconds) || transcriptionMaxDurationSeconds < 1) {
+    errors.push("TELEGRAM_VOICE_MAX_DURATION_SECONDS must be a positive integer");
   }
   if (!ownerId || !/^[1-9]\d*$/.test(ownerId)) {
     errors.push("TELEGRAM_OWNER_ID must be a positive numeric Telegram user ID");
@@ -82,5 +100,8 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
     telegramBotToken: telegramBotToken!,
     telegramWebhookSecret: telegramWebhookSecret!,
     tasksResultLimit,
+    transcriptionMaxBytes,
+    transcriptionMaxDurationSeconds,
+    transcriptionModel: environment.BUD_TRANSCRIPTION_MODEL?.trim() || DEFAULT_TRANSCRIPTION_MODEL,
   };
 }
