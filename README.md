@@ -81,8 +81,9 @@ another request.
 
 ## Task creation
 
-Bud prepares an immutable Task Proposal containing a required title, optional
-notes, and either a date-only due date or `No due date`. Telegram displays every
+Bud prepares an immutable Task Proposal containing a required title. By default,
+the Task is structurally undated and has no notes; a separate detailed path adds
+notes or a date-only due date only when explicitly requested. Telegram displays every
 field before Eve's native approval buttons. Approve writes exactly that Proposal
 to the configured Tasks list; Deny writes nothing. Revisions require a new
 Proposal and approval, and the same one-pending-Proposal Conversation rule used

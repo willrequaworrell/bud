@@ -6,12 +6,15 @@ Accepted
 
 ## Decision
 
-Google Task creation follows the Event Proposal approval boundary with two
-provider-neutral tools. `prepare_task` normalizes a required title, optional
-notes, and an optional date-only due date into an immutable Task Proposal.
-`create_task` accepts that complete Proposal, requires Eve approval on every
-call, revalidates its identity and Owner authorization, and writes exactly the
-displayed fields to the configured Tasks list.
+Google Task creation follows the Event Proposal approval boundary with three
+provider-neutral tools. `prepare_task` is structurally limited to a required
+title and always produces an undated, notes-free Proposal. The model cannot add
+defaults through this path. `prepare_detailed_task` accepts optional notes and
+an optional date-only due date only when the Owner explicitly supplies them.
+Both produce an immutable Task Proposal. `create_task` accepts that complete
+Proposal, requires Eve approval on every call, revalidates its identity and
+Owner authorization, and writes exactly the displayed fields to the configured
+Tasks list.
 
 The Eve call ID identifies one execution. In-process repeated delivery shares
 the same pending or completed insert. Eve's durable action state remains the

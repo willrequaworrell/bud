@@ -6,7 +6,9 @@ import {
   createTasks, groupTasks, isTaskProposalUnchanged, TasksAdapterError, type TasksAdapter,
 } from "./tasks.js";
 
-const taskDetailsSchema = z.object({
+const basicTaskSchema = z.object({ title: z.string() });
+
+const detailedTaskSchema = z.object({
   title: z.string(),
   notes: z.string().trim().min(1).optional(),
   dueDate: z.iso.date().optional(),
@@ -24,8 +26,20 @@ function isOwner(ctx: ToolContext, ownerId: string) {
 export function createPrepareTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Prepare one complete immutable Task Proposal. The title is required. Include notes only when the Owner explicitly supplies meaningful notes; punctuation around the title is not notes. Include a date-only due date only when the Owner explicitly requests one; otherwise omit dueDate so the Task remains undated. Never infer tomorrow or any other due date. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
-    inputSchema: taskDetailsSchema,
+    description: "Default Task preparation capability. Prepare one complete immutable Task Proposal containing only the required title. The resulting Task is always undated and has no notes. Use this capability unless the Owner explicitly supplies a due date or meaningful notes. Punctuation and quotation marks around the title are never notes. This tool never writes.",
+    inputSchema: basicTaskSchema,
+    async execute(input, ctx: ToolContext) {
+      if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
+      return tasks.prepareTask({ title: input.title });
+    },
+  });
+}
+
+export function createPrepareDetailedTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
+  const tasks = createTasks(options.adapter);
+  return defineTool({
+    description: "Detailed Task preparation capability. Use only when the Owner explicitly supplies a date-only due date or meaningful notes. Copy only those explicitly supplied details. Never infer today, tomorrow, or any other due date, and never copy the title or its punctuation into notes. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
+    inputSchema: detailedTaskSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
       return tasks.prepareTask(input);
