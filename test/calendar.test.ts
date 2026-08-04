@@ -368,7 +368,7 @@ it("warns when an all-day proposal overlaps an Event on any included day", async
       return [{ kind: "timed" as const, title: "Dinner", source: "Family",
         start: "2026-08-04T22:00:00.000Z", end: "2026-08-04T23:00:00.000Z" }];
     },
-  });
+  }, { now: () => new Date("2026-07-31T15:00:00.000Z") });
 
   expect(await calendar.prepareEvent({
     kind: "all-day", title: "Staycation", startDate: "2026-08-03",
