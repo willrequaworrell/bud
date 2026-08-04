@@ -55,10 +55,11 @@ async function askCalendar(message: string) {
   const model = mockModel(({ lastUserMessage, toolResults, tools }) => {
     if (toolResults.length > 0) return renderEvents(toolResults.at(-1)!.output as never);
     const description = tools.find(({ name }) => name === "list_calendar_events")?.description ?? "";
-    const asksForRemaining = /\b(left|remaining|rest)\b/i.test(lastUserMessage ?? "");
+    const asksForRemainingToday = /\b(left|remaining|rest)\b/i.test(lastUserMessage ?? "") &&
+      /\btoday\b/i.test(lastUserMessage ?? "");
     const documentsRemainingPeriod = /left|remaining|rest/i.test(description) &&
       description.includes("remainder-of-today");
-    const period: CalendarPeriod = asksForRemaining && documentsRemainingPeriod
+    const period: CalendarPeriod = asksForRemainingToday && documentsRemainingPeriod
       ? { kind: "remainder-of-today" }
       : { kind: "today" };
     return { toolCalls: [{ input: { period }, name: "list_calendar_events" }] };
