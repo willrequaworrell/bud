@@ -191,6 +191,7 @@ async function deliverWithSessionState(
             sequence: 0, stepIndex: 0, turnId: "turn", status: "completed",
           } });
         }
+        events.push({ type: "turn.completed", data: { sequence: 0, turnId: "turn" } });
         events.push({ type: "session.waiting", data: {
           continuationToken: "token", wait: "next-user-message",
         } });
@@ -499,7 +500,7 @@ describe("Telegram Channel", () => {
       "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
     ]);
     expect(result.inputResponses).toEqual([]);
-    expect(result.eventStreamStartIndexes).toEqual([-2, -2]);
+    expect(result.eventStreamStartIndexes).toEqual([-3, -3]);
   });
 
   it("does not label an ordinary active turn as a pending Proposal", async () => {

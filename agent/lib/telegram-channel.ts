@@ -18,7 +18,7 @@ const RESET_REQUEST_PREFIX = "bud:conversation-reset:";
 const REFUSED_REQUEST_PREFIX = "bud:pending-proposal-refused:";
 const PENDING_PROPOSAL_MESSAGE =
   "Please approve or deny the pending proposal before starting another request. You can also use /reset.";
-const PARKED_SESSION_TAIL_SIZE = 2;
+const PARKED_SESSION_TAIL_SIZE = 3;
 
 interface ResettableTelegramChannel {
   adapter: {
