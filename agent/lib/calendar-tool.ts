@@ -112,7 +112,7 @@ export function createListCalendarEventsTool(options: {
 }) {
   const calendar = createCalendar(options.adapter, options.now ? { now: options.now } : {});
   return defineTool({
-    description: "List events from the owner's configured calendar for an exact semantic date period. Resolve natural-language dates to this structure; ask the user when a material date is ambiguous.",
+    description: "List Events from the Owner's configured Calendar for an exact semantic date period. Use remainder-of-today when the Owner asks what is left, remaining, still ahead, or on the Calendar for the rest of today; it starts at the current instant and includes currently active Events. Use today for the whole local Calendar day when the Owner asks for everything today, including past Events. Resolve other natural-language dates to this structure; ask the Owner when a material date is ambiguous.",
     inputSchema: z.object({
       period: periodSchema,
       timeZone: z.string().optional().describe("IANA timezone; omit to use the Calendar timezone"),
