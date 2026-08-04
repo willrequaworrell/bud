@@ -18,6 +18,7 @@ const RESET_REQUEST_PREFIX = "bud:conversation-reset:";
 const REFUSED_REQUEST_PREFIX = "bud:pending-proposal-refused:";
 const PENDING_PROPOSAL_MESSAGE =
   "Please approve or deny the pending proposal before starting another request. You can also use /reset.";
+const PARKED_SESSION_TAIL_SIZE = 2;
 
 interface ResettableTelegramChannel {
   adapter: {
@@ -177,7 +178,9 @@ function completedSyntheticSession(requestId: string): Session {
 }
 
 async function hasPendingProposal(args: RouteHandlerArgs<TelegramChannelState>, sessionId: string) {
-  const stream = await args.getSession(sessionId).getEventStream({ startIndex: 0 });
+  const stream = await args.getSession(sessionId).getEventStream({
+    startIndex: -PARKED_SESSION_TAIL_SIZE,
+  });
   const reader = stream.getReader();
   const pendingCallIds = new Set<string>();
   try {

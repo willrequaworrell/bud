@@ -130,6 +130,7 @@ async function deliverWithSessionState(
 ) {
   const outbound: string[] = [];
   const authContexts: unknown[] = [];
+  const eventStreamStartIndexes: Array<number | undefined> = [];
   const inputResponses: unknown[] = [];
   const model = vi.fn(async (message: string) => `Model: ${message}`);
   const telegramFetch = vi.fn<typeof fetch>(async (_request, init) => {
@@ -163,9 +164,17 @@ async function deliverWithSessionState(
     waitUntil(task: Promise<unknown>) { tasks.push(task); },
     async resolveActiveSession() { return activeSession ? { sessionId: "session" } : undefined; },
     getSession() {
-      return { getEventStream: async () => new ReadableStream({ start(controller) {
+      return { getEventStream: async (options?: { startIndex?: number }) => {
+        eventStreamStartIndexes.push(options?.startIndex);
+        const events: any[] = [];
         if (pendingProposal) {
-          controller.enqueue({ type: "input.requested", data: { requests: [{
+          events.push(
+            { type: "input.requested", data: { requests: [], sequence: 0, stepIndex: 0,
+              turnId: "historical-turn" } },
+            { type: "session.waiting", data: {
+              continuationToken: "historical-token", wait: "next-user-message",
+            } },
+            { type: "input.requested", data: { requests: [{
               action: { kind: "tool-call", toolName: proposalToolName, callId: "call", input: {
                 proposal: { kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
                   endLocal: "2026-08-03T09:30", timeZone: "UTC", recurrence: {
@@ -173,19 +182,25 @@ async function deliverWithSessionState(
                   } },
               } },
               requestId: "approval", prompt: "Approve?",
-            }], sequence: 0, stepIndex: 0, turnId: "turn" } });
+            }], sequence: 0, stepIndex: 0, turnId: "turn" } },
+          );
         }
         if (pendingProposal === "resolved") {
-          controller.enqueue({ type: "action.result", data: {
+          events.push({ type: "action.result", data: {
             result: { kind: "tool-result", callId: "call", toolName: proposalToolName, output: {} },
             sequence: 0, stepIndex: 0, turnId: "turn", status: "completed",
           } });
         }
-        controller.enqueue({ type: "session.waiting", data: {
+        events.push({ type: "session.waiting", data: {
           continuationToken: "token", wait: "next-user-message",
         } });
-        controller.close();
-      } }) } as Session;
+        const startIndex = options?.startIndex ?? 0;
+        const selected = startIndex < 0 ? events.slice(startIndex) : events.slice(startIndex);
+        return new ReadableStream({ start(controller) {
+          for (const event of selected) controller.enqueue(event);
+          controller.close();
+        } });
+      } } as Session;
     },
   } as unknown as RouteHandlerArgs<TelegramChannelState>;
   for (const body of updates) {
@@ -196,7 +211,7 @@ async function deliverWithSessionState(
     }), args);
     await Promise.all(tasks.splice(0));
   }
-  return { authContexts, inputResponses, model, outbound };
+  return { authContexts, eventStreamStartIndexes, inputResponses, model, outbound };
 }
 
 async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
@@ -470,6 +485,21 @@ describe("Telegram Channel", () => {
     expect(result.outbound).toEqual([
       "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
     ]);
+  });
+
+  it("finds the current Proposal from a bounded tail after historical waiting events", async () => {
+    const result = await deliverWithActiveSession(
+      true,
+      update(42, "What is the weather?"),
+      update(42, "And tomorrow?"),
+    );
+    expect(result.model).not.toHaveBeenCalled();
+    expect(result.outbound).toEqual([
+      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+    ]);
+    expect(result.inputResponses).toEqual([]);
+    expect(result.eventStreamStartIndexes).toEqual([-2, -2]);
   });
 
   it("does not label an ordinary active turn as a pending Proposal", async () => {
