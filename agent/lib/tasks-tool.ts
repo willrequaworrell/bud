@@ -6,12 +6,20 @@ import {
   createTasks, groupTasks, isTaskProposalUnchanged, TasksAdapterError, type TasksAdapter,
 } from "./tasks.js";
 
-const basicTaskSchema = z.object({ title: z.string() });
+const basicTaskSchema = z.object({
+  title: z.string().describe("The Task title only, without quotation marks or conversational filler."),
+});
 
 const detailedTaskSchema = z.object({
-  title: z.string(),
-  notes: z.string().trim().min(1).optional(),
-  dueDate: z.iso.date().optional(),
+  title: z.string().describe(
+    "The Task title only. Exclude due-date language, quotation marks, punctuation, and note content.",
+  ),
+  notes: z.string().trim().min(1).optional().describe(
+    "Meaningful note content only when the Owner explicitly asks to add a note. Omit this field otherwise. Never copy the title, due-date language, punctuation, or conversational filler here.",
+  ),
+  dueDate: z.iso.date().optional().describe(
+    "An explicitly requested date, resolved to YYYY-MM-DD. Relative phrases such as tomorrow belong only in this field, never in notes.",
+  ),
 });
 
 const taskProposalSchema = z.object({
@@ -38,7 +46,7 @@ export function createPrepareTaskTool(options: { adapter: TasksAdapter; ownerId:
 export function createPrepareDetailedTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Detailed Task preparation capability. Use only when the Owner explicitly supplies a date-only due date or meaningful notes. Copy only those explicitly supplied details. Never infer today, tomorrow, or any other due date, and never copy the title or its punctuation into notes. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
+    description: "Detailed Task preparation capability. Use only when the Owner explicitly supplies a date-only due date or explicitly asks to add meaningful note content. Resolve an explicitly supplied relative date such as tomorrow into dueDate. Omit notes unless the Owner explicitly requests a note; due-date language, title text, quotation marks, punctuation, and conversational filler are never notes. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
     inputSchema: detailedTaskSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };

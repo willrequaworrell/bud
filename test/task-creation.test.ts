@@ -1,5 +1,8 @@
 import type { ToolContext } from "eve/tools";
+import { mockModel } from "eve/evals";
+import { generateText, stepCountIs, tool as modelTool } from "ai";
 import { expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import {
   createCreateTaskTool, createPrepareDetailedTaskTool, createPrepareTaskTool,
@@ -45,6 +48,59 @@ it("structurally omits model-invented due dates and notes from the default Task 
       proposalId: expect.any(String),
     },
   });
+});
+
+it.each([
+  [
+    "Create Submit report, due tomorrow",
+    { title: "Submit report", dueDate: "2026-08-05" },
+    { title: "Submit report", dueDate: "2026-08-05", notes: null },
+  ],
+  [
+    "Create Submit report, due tomorrow, with a note that it needs manager approval",
+    { title: "Submit report", dueDate: "2026-08-05", notes: "Needs manager approval" },
+    { title: "Submit report", dueDate: "2026-08-05", notes: "Needs manager approval" },
+  ],
+] as const)("keeps explicitly requested Task details in their own fields for: %s", async (
+  request, input, expected,
+) => {
+  const tool = createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const model = mockModel(({ lastUserMessage, toolResults, tools }) => {
+    if (toolResults.length > 0) return "Prepared";
+    expect(lastUserMessage).toBe(request);
+    expect(tools.find(({ name }) => name === "prepare_detailed_task")?.description)
+      .toContain("Omit notes unless the Owner explicitly requests a note");
+    return { toolCalls: [{ name: "prepare_detailed_task", input }] };
+  });
+  const generated = await generateText({
+    model,
+    prompt: request,
+    stopWhen: stepCountIs(2),
+    tools: {
+      prepare_detailed_task: modelTool({
+        description: tool.description,
+        inputSchema: z.object({
+          title: z.string(), notes: z.string().optional(), dueDate: z.iso.date().optional(),
+        }),
+        execute: (toolInput) => tool.execute(toolInput, context()),
+      }),
+    },
+  });
+  const result = generated.toolResults[0]?.output;
+
+  expect(result).toEqual({ status: "ok", proposal: {
+    ...expected, proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
+  } });
+});
+
+it("documents the notes extraction contract in the detailed Task model schema", () => {
+  const tool = createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const schema = JSON.stringify((tool.inputSchema as unknown as { toJSONSchema(): unknown }).toJSONSchema());
+
+  expect(tool.description).toContain("Omit notes unless the Owner explicitly requests a note");
+  expect(schema).toContain("due-date language");
+  expect(schema).toContain("Omit this field otherwise");
+  expect(schema).toContain("Relative phrases such as tomorrow belong only in this field");
 });
 
 it("changes Proposal identity when any displayed Task detail changes", async () => {
