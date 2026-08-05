@@ -1,11 +1,12 @@
-import type { ToolContext } from "eve/tools";
 import { mockModel } from "eve/evals";
+import type { ToolContext } from "eve/tools";
 import { generateText, stepCountIs, tool as modelTool } from "ai";
 import { expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import {
-  createCreateTaskTool, createPrepareDetailedTaskTool, createPrepareTaskTool,
+  createCreateTaskTool, createPrepareDatedTaskTool, createPrepareNotedTaskTool,
+  createPrepareTaskTool,
 } from "../agent/lib/tasks-tool.js";
 import type { TasksAdapter } from "../agent/lib/tasks.js";
 
@@ -17,107 +18,110 @@ function adapter(createTask = vi.fn(async () => ({ taskId: "task-1" }))): TasksA
   return { createTask, async listIncomplete() { return { tasks: [], truncated: false }; } };
 }
 
-it.each([
-  [{ title: "Buy milk", notes: "Get oat milk", dueDate: "2026-08-03" },
-    { title: "Buy milk", notes: "Get oat milk", dueDate: "2026-08-03" }],
-  [{ title: "Buy milk" }, { title: "Buy milk", notes: null, dueDate: null }],
-] as const)("prepares an immutable Task Proposal %#", async (input, expected) => {
-  const tool = ("notes" in input && input.notes) || ("dueDate" in input && input.dueDate)
-    ? createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" })
-    : createPrepareTaskTool({ adapter: adapter(), ownerId: "42" });
-  const result = await tool.execute(input, context());
-  expect(result).toEqual({ status: "ok", proposal: {
-    ...expected, proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
-  } });
-  expect(tool.approval).toBeUndefined();
+it("prepares immutable title-only, dated, and noted Task Proposals", async () => {
+  const options = { adapter: adapter(), ownerId: "42" };
+  const prepared = await Promise.all([
+    createPrepareTaskTool(options).execute({ title: "Buy milk" }, context()),
+    createPrepareDatedTaskTool(options).execute({
+      title: "Submit report", dueDate: "2026-08-05",
+    }, context()),
+    createPrepareNotedTaskTool(options).execute({
+      title: "Submit report", dueDate: "2026-08-05", notes: "Needs manager approval",
+    }, context()),
+  ]);
+
+  expect(prepared).toEqual([
+    { status: "ok", proposal: { title: "Buy milk", dueDate: null, notes: null,
+      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+    { status: "ok", proposal: { title: "Submit report", dueDate: "2026-08-05", notes: null,
+      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+    { status: "ok", proposal: { title: "Submit report", dueDate: "2026-08-05",
+      notes: "Needs manager approval", proposalId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+  ]);
 });
 
-it("structurally omits model-invented due dates and notes from the default Task tool", async () => {
-  const tool = createPrepareTaskTool({ adapter: adapter(), ownerId: "42" });
-  const schema = tool.inputSchema as unknown as {
-    parse(input: unknown): { title: string; dueDate?: string; notes?: string };
-  };
-  const parsed = schema.parse({
-    title: "Fit mouthguard", dueDate: "2026-08-03", notes: ".",
-  });
+it("structurally prevents title-only and dated Task tools from accepting notes", async () => {
+  const basic = createPrepareTaskTool({ adapter: adapter(), ownerId: "42" });
+  const dated = createPrepareDatedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const basicInput = (basic.inputSchema as unknown as { parse(value: unknown): { title: string } })
+    .parse({ title: "Buy milk", dueDate: "2026-08-05", notes: "invented" });
+  const datedInput = (dated.inputSchema as unknown as {
+    parse(value: unknown): { title: string; dueDate: string };
+  }).parse({ title: "Submit report", dueDate: "2026-08-05", notes: "due tomorrow" });
 
-  expect(await tool.execute(parsed, context())).toEqual({
-    status: "ok",
-    proposal: {
-      title: "Fit mouthguard", dueDate: null, notes: null,
-      proposalId: expect.any(String),
-    },
+  expect(await basic.execute(basicInput, context())).toEqual({
+    status: "ok", proposal: { title: "Buy milk", dueDate: null, notes: null,
+      proposalId: expect.any(String) },
+  });
+  expect(await dated.execute(datedInput, context())).toEqual({
+    status: "ok", proposal: { title: "Submit report", dueDate: "2026-08-05", notes: null,
+      proposalId: expect.any(String) },
   });
 });
 
+it("requires explicit note content at the noted Task interface", () => {
+  const tool = createPrepareNotedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const schema = tool.inputSchema as unknown as { safeParse(value: unknown): { success: boolean } };
+
+  expect(schema.safeParse({ title: "Submit report", dueDate: "2026-08-05" }).success).toBe(false);
+  expect(schema.safeParse({ title: "Submit report", notes: "" }).success).toBe(false);
+  expect(schema.safeParse({ title: "Submit report", notes: "Needs approval" }).success).toBe(true);
+});
+
 it.each([
-  [
-    "Create Submit report, due tomorrow",
-    { title: "Submit report", dueDate: "2026-08-05" },
-    { title: "Submit report", dueDate: "2026-08-05", notes: null },
-  ],
-  [
-    "Create Submit report, due tomorrow, with a note that it needs manager approval",
-    { title: "Submit report", dueDate: "2026-08-05", notes: "Needs manager approval" },
-    { title: "Submit report", dueDate: "2026-08-05", notes: "Needs manager approval" },
-  ],
-] as const)("keeps explicitly requested Task details in their own fields for: %s", async (
-  request, input, expected,
+  ["Create Submit report, due tomorrow", "prepare_dated_task",
+    { title: "Submit report", dueDate: "2026-08-05" }, null],
+  ["Create Submit report, due tomorrow, with a note that it needs manager approval",
+    "prepare_noted_task", { title: "Submit report", dueDate: "2026-08-05",
+      notes: "Needs manager approval" }, "Needs manager approval"],
+] as const)("exposes the structurally appropriate model tool for: %s", async (
+  request, selectedTool, input, expectedNotes,
 ) => {
-  const tool = createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" });
-  const model = mockModel(({ lastUserMessage, toolResults, tools }) => {
+  const dated = createPrepareDatedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const noted = createPrepareNotedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const model = mockModel(({ toolResults, tools }) => {
     if (toolResults.length > 0) return "Prepared";
-    expect(lastUserMessage).toBe(request);
-    expect(tools.find(({ name }) => name === "prepare_detailed_task")?.description)
-      .toContain("Omit notes unless the Owner explicitly requests a note");
-    return { toolCalls: [{ name: "prepare_detailed_task", input }] };
+    expect(tools.find(({ name }) => name === "prepare_dated_task")?.description)
+      .toContain("structurally cannot add notes");
+    expect(tools.find(({ name }) => name === "prepare_noted_task")?.description)
+      .toContain("explicitly asks to add meaningful note content");
+    return { toolCalls: [{ name: selectedTool, input }] };
   });
   const generated = await generateText({
-    model,
-    prompt: request,
-    stopWhen: stepCountIs(2),
+    model, prompt: request, stopWhen: stepCountIs(2),
     tools: {
-      prepare_detailed_task: modelTool({
-        description: tool.description,
+      prepare_dated_task: modelTool({
+        description: dated.description,
+        inputSchema: z.object({ title: z.string(), dueDate: z.iso.date() }),
+        execute: (value) => dated.execute(value, context()),
+      }),
+      prepare_noted_task: modelTool({
+        description: noted.description,
         inputSchema: z.object({
-          title: z.string(), notes: z.string().optional(), dueDate: z.iso.date().optional(),
+          title: z.string(), notes: z.string().min(1), dueDate: z.iso.date().optional(),
         }),
-        execute: (toolInput) => tool.execute(toolInput, context()),
+        execute: (value) => noted.execute(value, context()),
       }),
     },
   });
-  const result = generated.toolResults[0]?.output;
 
-  expect(result).toEqual({ status: "ok", proposal: {
-    ...expected, proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
-  } });
-});
-
-it("documents the notes extraction contract in the detailed Task model schema", () => {
-  const tool = createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" });
-  const schema = JSON.stringify((tool.inputSchema as unknown as { toJSONSchema(): unknown }).toJSONSchema());
-
-  expect(tool.description).toContain("Omit notes unless the Owner explicitly requests a note");
-  expect(schema).toContain("due-date language");
-  expect(schema).toContain("Omit this field otherwise");
-  expect(schema).toContain("Relative phrases such as tomorrow belong only in this field");
+  expect(generated.toolCalls[0]?.toolName).toBe(selectedTool);
+  expect((generated.toolResults[0]?.output as { proposal: { notes: string | null } })
+    .proposal.notes).toBe(expectedNotes);
 });
 
 it("changes Proposal identity when any displayed Task detail changes", async () => {
   const basic = createPrepareTaskTool({ adapter: adapter(), ownerId: "42" });
-  const detailed = createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const noted = createPrepareNotedTaskTool({ adapter: adapter(), ownerId: "42" });
   const original = await basic.execute({ title: "Buy milk" }, context());
-  const revised = await detailed.execute({ title: "Buy milk", notes: "Organic" }, context());
-  expect(original.status).toBe("ok");
-  expect(revised.status).toBe("ok");
-  if (original.status === "ok" && revised.status === "ok") {
-    expect(revised.proposal.proposalId).not.toBe(original.proposal.proposalId);
-  }
+  const revised = await noted.execute({ title: "Buy milk", notes: "Organic" }, context());
+  if (original.status !== "ok" || revised.status !== "ok") throw new Error("expected proposals");
+  expect(revised.proposal.proposalId).not.toBe(original.proposal.proposalId);
 });
 
 it("rejects a reconstructed Proposal before displaying an approval", async () => {
   const tasks = adapter();
-  const prepare = createPrepareDetailedTaskTool({ adapter: tasks, ownerId: "42" });
+  const prepare = createPrepareTaskTool({ adapter: tasks, ownerId: "42" });
   const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
   const prepared = await prepare.execute({ title: "Fit mouthguard" }, context());
   if (prepared.status !== "ok") throw new Error("expected proposal");
@@ -133,7 +137,7 @@ it("rejects a reconstructed Proposal before displaying an approval", async () =>
 it("creates exactly the approved Task only through per-call approval", async () => {
   const createTask = vi.fn(async () => ({ taskId: "task-1" }));
   const tasks = adapter(createTask);
-  const prepare = createPrepareDetailedTaskTool({ adapter: tasks, ownerId: "42" });
+  const prepare = createPrepareDatedTaskTool({ adapter: tasks, ownerId: "42" });
   const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
   const prepared = await prepare.execute({ title: "Buy milk", dueDate: "2026-08-03" }, context());
   if (prepared.status !== "ok") throw new Error("expected proposal");
@@ -163,13 +167,13 @@ it("rejects a changed or unauthorized Task Proposal without writing", async () =
 });
 
 it.each(["", "   "])("requires a non-empty Task title", async (title) => {
-  const tool = createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" });
-  await expect(tool.execute({ title }, context()))
+  const tool = createPrepareDatedTaskTool({ adapter: adapter(), ownerId: "42" });
+  await expect(tool.execute({ title, dueDate: "2026-08-03" }, context()))
     .resolves.toEqual({ status: "error", reason: "title_required" });
 });
 
 it("cannot silently coerce a time-specific request into a date-only Task Proposal", () => {
-  const tool = createPrepareDetailedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const tool = createPrepareDatedTaskTool({ adapter: adapter(), ownerId: "42" });
   const schema = tool.inputSchema as unknown as {
     safeParse(input: unknown): { success: boolean };
   };

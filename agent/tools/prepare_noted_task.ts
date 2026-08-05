@@ -1,7 +1,7 @@
 import { configuredTasksAdapter, tasksConfig } from "../lib/configured-tasks.js";
-import { createPrepareDetailedTaskTool } from "../lib/tasks-tool.js";
+import { createPrepareNotedTaskTool } from "../lib/tasks-tool.js";
 
-export default createPrepareDetailedTaskTool({
+export default createPrepareNotedTaskTool({
   adapter: configuredTasksAdapter,
   ownerId: tasksConfig.ownerId,
 });
