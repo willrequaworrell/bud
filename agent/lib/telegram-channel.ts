@@ -13,6 +13,7 @@ import type { RouteHandlerArgs, Session } from "eve/channels";
 import type { BudConfig } from "./config.js";
 import { isOwnerPrivateText } from "./telegram-policy.js";
 import { preprocessTelegramMedia, type TelegramMediaDependencies } from "./telegram-media.js";
+import type { ProposalCorrectionClassifier } from "./proposal-correction.js";
 
 const RESET_REQUEST_PREFIX = "bud:conversation-reset:";
 const REFUSED_REQUEST_PREFIX = "bud:pending-proposal-refused:";
@@ -47,10 +48,20 @@ interface ResetPayload {
   [key: string]: unknown;
 }
 
+interface TelegramChannelDependencies extends TelegramMediaDependencies {
+  correctionClassifier?: ProposalCorrectionClassifier;
+}
+
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : undefined;
+}
+
+async function isTelegramFreeTextRequest(request: Request): Promise<boolean> {
+  const update = record(await request.clone().json().catch(() => undefined));
+  const message = record(update?.message);
+  return typeof message?.text === "string" && message.text.trim().length > 0;
 }
 
 function eventProposalApprovalPrompt(input: unknown): string | undefined {
@@ -177,26 +188,46 @@ function completedSyntheticSession(requestId: string): Session {
   };
 }
 
-async function hasPendingProposal(args: RouteHandlerArgs<TelegramChannelState>, sessionId: string) {
+interface PendingProposal {
+  proposal: Record<string, unknown>;
+  proposalType: "event" | "task";
+  requestId: string;
+}
+
+async function pendingProposal(
+  args: RouteHandlerArgs<TelegramChannelState>,
+  sessionId: string,
+): Promise<PendingProposal | undefined> {
   const stream = await args.getSession(sessionId).getEventStream({
     startIndex: -PARKED_SESSION_TAIL_SIZE,
   });
   const reader = stream.getReader();
   const pendingCallIds = new Set<string>();
+  const proposalsByCallId = new Map<string, PendingProposal>();
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) return pendingCallIds.size > 0;
+      if (done) return undefined;
       if (value.type === "input.requested") {
         for (const request of value.data.requests) {
           if (isProposalCreationTool(request.action.toolName)) {
             pendingCallIds.add(request.action.callId);
+            const proposal = record(record(request.action.input)?.proposal);
+            if (proposal) {
+              proposalsByCallId.set(request.action.callId, {
+                proposal,
+                proposalType: request.action.toolName.endsWith("create_task") ? "task" : "event",
+                requestId: request.requestId,
+              });
+            }
           }
         }
       } else if (value.type === "action.result") {
         pendingCallIds.delete(value.data.result.callId);
+        proposalsByCallId.delete(value.data.result.callId);
       } else if (value.type === "session.waiting") {
-        return pendingCallIds.size > 0;
+        const pendingCallId = pendingCallIds.values().next().value;
+        return pendingCallId ? proposalsByCallId.get(pendingCallId) : undefined;
       }
     }
   } finally {
@@ -237,9 +268,9 @@ function ownerCallbackAuth(state: TelegramChannelState, ownerId: string) {
 
 export function createBudTelegramChannel(
   channelConfig: BudConfig,
-  dependencies: TelegramMediaDependencies = {},
+  dependencies: TelegramChannelDependencies = {},
 ): TelegramChannel {
-  const { telegramFetch } = dependencies;
+  const { correctionClassifier, telegramFetch } = dependencies;
   const channel = telegramChannel({
     ...(telegramFetch ? { api: { fetch: telegramFetch } } : {}),
     credentials: {
@@ -274,6 +305,7 @@ export function createBudTelegramChannel(
   if (route?.transport !== "http") throw new Error("Telegram route is missing");
   const handleTelegramRequest = route.handler;
   route.handler = async (request, args) => {
+    const isFreeText = await isTelegramFreeTextRequest(request);
     const processedRequest = await preprocessTelegramMedia(request, channelConfig, dependencies);
     if (processedRequest instanceof Response) return processedRequest;
     return handleTelegramRequest(processedRequest, {
@@ -291,7 +323,19 @@ export function createBudTelegramChannel(
           const active = await args.resolveActiveSession({
             continuationToken: options.continuationToken,
           });
-          if (!active || !await hasPendingProposal(args, active.sessionId)) {
+          const pending = active ? await pendingProposal(args, active.sessionId) : undefined;
+          if (!pending) {
+            return args.send(input, options);
+          }
+          const isCorrection = correctionClassifier && isFreeText
+            ? await correctionClassifier({ message, proposal: pending.proposal,
+              proposalType: pending.proposalType }).catch(() => false)
+            : false;
+          if (isCorrection) {
+            await args.send(
+              { inputResponses: [{ optionId: "deny", requestId: pending.requestId }] },
+              options,
+            );
             return args.send(input, options);
           }
           await sendTelegramMessage({

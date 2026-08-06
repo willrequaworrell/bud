@@ -53,6 +53,7 @@ async function deliverMedia(
     downloadResponse?: () => Response;
     pendingProposal?: boolean;
     proposal?: "task";
+    correctionClassifier?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
   const outbound: string[] = [];
@@ -69,7 +70,12 @@ async function deliverMedia(
     return Response.json({ ok: true, result: { message_id: 8, chat: { id: 42, type: "private" } } });
   });
   const channelConfig = mediaOptions.config ?? config;
-  const channel = createBudTelegramChannel(channelConfig, { telegramFetch, transcription });
+  const channel = createBudTelegramChannel(channelConfig, {
+    ...(mediaOptions.correctionClassifier
+      ? { correctionClassifier: mediaOptions.correctionClassifier }
+      : {}),
+    telegramFetch, transcription,
+  });
   const route = channel.routes[0]!;
   const tasks: Promise<unknown>[] = [];
   const send = vi.fn(async (input, sendOptions) => {
@@ -126,19 +132,21 @@ async function deliverWithSessionState(
   activeSession: boolean,
   pendingProposal: boolean | "resolved",
   proposalToolName = "create_calendar_event",
+  correctionClassifier = vi.fn(async () => false),
   ...updates: unknown[]
 ) {
   const outbound: string[] = [];
   const authContexts: unknown[] = [];
   const eventStreamStartIndexes: Array<number | undefined> = [];
   const inputResponses: unknown[] = [];
+  const replacementProposals: Array<Record<string, unknown>> = [];
   const model = vi.fn(async (message: string) => `Model: ${message}`);
   const telegramFetch = vi.fn<typeof fetch>(async (_request, init) => {
     const body = JSON.parse(String(init?.body)) as { text?: string };
     if (body.text) outbound.push(body.text);
     return Response.json({ ok: true, result: { message_id: 8, chat: { id: 42, type: "private" } } });
   });
-  const channel = createBudTelegramChannel(config, { telegramFetch });
+  const channel = createBudTelegramChannel(config, { correctionClassifier, telegramFetch });
   const route = channel.routes[0]!;
   const tasks: Promise<unknown>[] = [];
   const args = {
@@ -158,7 +166,25 @@ async function deliverWithSessionState(
       const runtime = { state: options.state as TelegramChannelState, ctx: {}, session: {
         continuationToken: options.continuationToken, setContinuationToken() {},
       } };
-      await (channel as any).adapter.createAdapterContext(runtime).telegram.sendMessage(reply);
+      const telegram = (channel as any).adapter.createAdapterContext(runtime).telegram;
+      await telegram.sendMessage(reply);
+      const replacementProposal = payload.message === 'Actually the title should be "due tomorrow report"'
+        ? { title: "due tomorrow report", dueDate: null, notes: null, proposalId: "a".repeat(64) }
+        : payload.message === "Wait, make that 1pm"
+          ? { kind: "timed", title: "Practice", startLocal: "2026-08-03T13:00",
+            endLocal: "2026-08-03T13:30", timeZone: "UTC", proposalId: "b".repeat(64) }
+          : undefined;
+      if (replacementProposal) {
+        replacementProposals.push(replacementProposal);
+        await handleTelegramInputRequested({ requests: [{
+          action: { callId: "replacement-call", kind: "tool-call",
+            toolName: "kind" in replacementProposal ? "create_calendar_event" : "create_task",
+            input: { proposal: replacementProposal } },
+          allowFreeform: false, display: "confirmation",
+          options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
+          prompt: "Approve?", requestId: "replacement-approval",
+        }] } as never, { state: options.state, telegram } as never, {} as never);
+      }
       return { id: "session" } as Session;
     }),
     waitUntil(task: Promise<unknown>) { tasks.push(task); },
@@ -176,10 +202,13 @@ async function deliverWithSessionState(
             } },
             { type: "input.requested", data: { requests: [{
               action: { kind: "tool-call", toolName: proposalToolName, callId: "call", input: {
-                proposal: { kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
-                  endLocal: "2026-08-03T09:30", timeZone: "UTC", recurrence: {
-                    frequency: "daily", interval: 1, end: { kind: "count", count: 5 },
-                  } },
+                proposal: proposalToolName === "create_task"
+                  ? { title: "report", dueDate: "2026-08-07", notes: null,
+                    proposalId: "original-task-proposal" }
+                  : { kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
+                    endLocal: "2026-08-03T09:30", timeZone: "UTC", recurrence: {
+                      frequency: "daily", interval: 1, end: { kind: "count", count: 5 },
+                    } },
               } },
               requestId: "approval", prompt: "Approve?",
             }], sequence: 0, stepIndex: 0, turnId: "turn" } },
@@ -212,11 +241,14 @@ async function deliverWithSessionState(
     }), args);
     await Promise.all(tasks.splice(0));
   }
-  return { authContexts, eventStreamStartIndexes, inputResponses, model, outbound };
+  return { authContexts, eventStreamStartIndexes, inputResponses, model, outbound,
+    replacementProposals };
 }
 
 async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
-  return deliverWithSessionState(activeSession, activeSession, "create_calendar_event", ...updates);
+  return deliverWithSessionState(
+    activeSession, activeSession, "create_calendar_event", vi.fn(async () => false), ...updates,
+  );
 }
 
 async function deliver(...updates: unknown[]) {
@@ -256,9 +288,11 @@ describe("Telegram Channel", () => {
   });
 
   it("preserves pending-Proposal serialization for transcribed voice input", async () => {
+    const correctionClassifier = vi.fn(async () => true);
     const result = await deliverMedia(mediaUpdate("voice", {
       duration: 8, file_id: "voice-pending", file_size: 800, mime_type: "audio/ogg",
-    }), undefined, { pendingProposal: true });
+    }), undefined, { correctionClassifier, pendingProposal: true });
+    expect(correctionClassifier).not.toHaveBeenCalled();
     expect(result.model).not.toHaveBeenCalled();
     expect(result.send).not.toHaveBeenCalled();
     expect(result.outbound).toEqual([
@@ -480,12 +514,47 @@ describe("Telegram Channel", () => {
     expect(result.outbound).toEqual(["Conversation reset."]);
   });
 
-  it("refuses unrelated text while a Proposal approval is pending", async () => {
-    const result = await deliverWithActiveSession(true, update(42, "What is the weather?"));
+  it("refuses an unrelated Calendar query while a Proposal approval is pending", async () => {
+    const result = await deliverWithActiveSession(true, update(42, "What's on my calendar today?"));
     expect(result.model).not.toHaveBeenCalled();
     expect(result.outbound).toEqual([
       "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
     ]);
+  });
+
+  it("supersedes a pending Task Proposal before starting a title correction turn", async () => {
+    const correctionClassifier = vi.fn(async () => true);
+    const result = await deliverWithSessionState(
+      true, true, "create_task", correctionClassifier,
+      update(42, 'Actually the title should be "due tomorrow report"'),
+    );
+
+    expect(correctionClassifier).toHaveBeenCalledWith({
+      message: 'Actually the title should be "due tomorrow report"',
+      proposal: expect.objectContaining({ title: "report", dueDate: "2026-08-07" }),
+      proposalType: "task",
+    });
+    expect(result.inputResponses).toEqual([{ optionId: "deny", requestId: "approval" }]);
+    expect(result.model).toHaveBeenCalledWith('Actually the title should be "due tomorrow report"');
+    expect(result.replacementProposals).toEqual([expect.objectContaining({
+      title: "due tomorrow report", dueDate: null,
+    })]);
+    expect(result.outbound.at(-1)).toContain(
+      "Create Task?\n\ndue tomorrow report\nDue: No due date",
+    );
+  });
+
+  it("supersedes a pending Event Proposal before starting a time correction turn", async () => {
+    const result = await deliverWithSessionState(
+      true, true, "create_calendar_event", vi.fn(async () => true), update(42, "Wait, make that 1pm"),
+    );
+
+    expect(result.inputResponses).toEqual([{ optionId: "deny", requestId: "approval" }]);
+    expect(result.model).toHaveBeenCalledWith("Wait, make that 1pm");
+    expect(result.replacementProposals).toEqual([expect.objectContaining({
+      startLocal: "2026-08-03T13:00",
+    })]);
+    expect(result.outbound.at(-1)).toContain("2026-08-03T13:00–2026-08-03T13:30");
   });
 
   it("finds the current Proposal from a bounded tail after historical waiting events", async () => {
@@ -505,21 +574,23 @@ describe("Telegram Channel", () => {
 
   it("does not label an ordinary active turn as a pending Proposal", async () => {
     const result = await deliverWithSessionState(
-      true, false, "create_calendar_event", update(42, "One more detail"),
+      true, false, "create_calendar_event", vi.fn(async () => false), update(42, "One more detail"),
     );
     expect(result.model).toHaveBeenCalledWith("One more detail");
     expect(result.outbound).toEqual(["Model: One more detail"]);
   });
 
   it("does not treat a resolved Event approval in history as pending", async () => {
-    const result = await deliverWithSessionState(true, "resolved", "create_calendar_event", update(42, "Thanks"));
+    const result = await deliverWithSessionState(
+      true, "resolved", "create_calendar_event", vi.fn(async () => false), update(42, "Thanks"),
+    );
     expect(result.model).toHaveBeenCalledWith("Thanks");
     expect(result.outbound).toEqual(["Model: Thanks"]);
   });
 
   it("refuses unrelated text while a Task Proposal is pending", async () => {
     const result = await deliverWithSessionState(
-      true, true, "create_task", update(42, "What is the weather?"),
+      true, true, "create_task", vi.fn(async () => false), update(42, "What is the weather?"),
     );
     expect(result.model).not.toHaveBeenCalled();
     expect(result.outbound).toEqual([
@@ -529,7 +600,7 @@ describe("Telegram Channel", () => {
 
   it("allows a new request after a Task Proposal is denied or approved", async () => {
     const result = await deliverWithSessionState(
-      true, "resolved", "create_task", update(42, "Thanks"),
+      true, "resolved", "create_task", vi.fn(async () => false), update(42, "Thanks"),
     );
     expect(result.model).toHaveBeenCalledWith("Thanks");
   });
