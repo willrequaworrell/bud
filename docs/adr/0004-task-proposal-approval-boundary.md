@@ -18,6 +18,11 @@ Proposal, requires Eve approval on every call, revalidates its identity and
 Owner authorization, and writes exactly the displayed fields to the configured
 Tasks list.
 
+Date-like words are metadata only when the Owner separately phrases them as the
+due date. They can still be literal title text, especially in responses to a
+title clarification. The Task boundary forbids copying date phrases into notes;
+it does not forbid titles such as "due tomorrow report".
+
 The Eve call ID identifies one execution. In-process repeated delivery shares
 the same pending or completed insert. Eve's durable action state remains the
 primary retry boundary across processes because Google Tasks does not accept a

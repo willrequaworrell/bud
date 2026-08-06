@@ -68,6 +68,35 @@ it("requires explicit note content at the noted Task interface", () => {
   expect(schema.safeParse({ title: "Submit report", notes: "Needs approval" }).success).toBe(true);
 });
 
+it("accepts date-like words when they are the literal Task title", async () => {
+  const tool = createPrepareTaskTool({ adapter: adapter(), ownerId: "42" });
+
+  await expect(tool.execute({ title: "\"due tomorrow report\"" }, context()))
+    .resolves.toEqual({
+      status: "ok", proposal: { title: "due tomorrow report", dueDate: null, notes: null,
+        proposalId: expect.any(String) },
+    });
+  expect(tool.description).toContain("Do not ask for a different title merely because");
+});
+
+it("keeps title schema guidance from rejecting literal date-like titles", () => {
+  const basic = createPrepareTaskTool({ adapter: adapter(), ownerId: "42" });
+  const dated = createPrepareDatedTaskTool({ adapter: adapter(), ownerId: "42" });
+  const noted = createPrepareNotedTaskTool({ adapter: adapter(), ownerId: "42" });
+
+  const schemaText = [
+    JSON.stringify((basic.inputSchema as z.ZodType).def),
+    JSON.stringify((dated.inputSchema as z.ZodType).def),
+    JSON.stringify((noted.inputSchema as z.ZodType).def),
+    basic.description,
+    dated.description,
+    noted.description,
+  ].join("\n");
+
+  expect(schemaText).not.toContain("without due-date language");
+  expect(schemaText).toContain("date-like words can be part of the literal title");
+});
+
 it.each([
   ["Create Submit report, due tomorrow", "prepare_dated_task",
     { title: "Submit report", dueDate: "2026-08-05" }, null],

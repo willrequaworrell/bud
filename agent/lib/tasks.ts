@@ -55,10 +55,16 @@ function validDate(value: string): boolean {
     normalized.getUTCDate() === day;
 }
 
+function normalizeTitle(value: string): string {
+  const title = value.trim();
+  const quoted = title.match(/^(["'])(.*)\1$/s);
+  return quoted ? quoted[2]!.trim() : title;
+}
+
 export function createTasks(adapter: TasksAdapter) {
   return {
     prepareTask(input: { title: string; notes?: string | undefined; dueDate?: string | undefined }) {
-      const title = input.title.trim();
+      const title = normalizeTitle(input.title);
       if (!title) return { status: "error" as const, reason: "title_required" as const };
       if (input.dueDate !== undefined && !validDate(input.dueDate)) {
         return { status: "error" as const, reason: "invalid_due_date" as const };
