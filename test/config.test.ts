@@ -79,6 +79,23 @@ describe("configuration", () => {
       .toThrowError("TELEGRAM_VOICE_MAX_DURATION_SECONDS must be a positive integer");
   });
 
+  it("accepts only a high-entropy Siri capture token when the channel is enabled", () => {
+    const required = {
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+      GOOGLE_OAUTH_REFRESH_TOKEN: "refresh-token",
+      TELEGRAM_OWNER_ID: "42",
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "webhook-secret",
+    };
+    const captureToken = "a".repeat(32);
+
+    expect(loadConfig({ ...required, BUD_SIRI_CAPTURE_TOKEN: captureToken }))
+      .toMatchObject({ siriCaptureToken: captureToken });
+    expect(() => loadConfig({ ...required, BUD_SIRI_CAPTURE_TOKEN: "too-short" }))
+      .toThrowError("BUD_SIRI_CAPTURE_TOKEN must contain at least 32 characters");
+  });
+
   it("configures one Google Tasks list and a bounded result limit", () => {
     const required = {
       GOOGLE_OAUTH_CLIENT_ID: "client-id",

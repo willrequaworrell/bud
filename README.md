@@ -47,6 +47,32 @@ oversized, unsupported, failed, or empty transcriptions stop at the channel and
 ask for typed input, so they cannot trigger Calendar or Tasks operations. Photos,
 documents, video, ordinary audio, and other media are unsupported.
 
+## Siri Shortcut capture
+
+Bud exposes an optional `POST /eve/v1/siri` ingress for a personal Siri
+Shortcut. Set `BUD_SIRI_CAPTURE_TOKEN` to a random value containing at least 32
+characters; leaving it unset keeps the route disabled. Generate a token with:
+
+```sh
+openssl rand -hex 32
+```
+
+The Shortcut sends JSON with an `Authorization` bearer header:
+
+```http
+POST /eve/v1/siri
+Authorization: Bearer <BUD_SIRI_CAPTURE_TOKEN>
+Content-Type: application/json
+
+{"message":"Remind me to order furnace filters"}
+```
+
+Authenticated, non-empty messages of at most 2,000 characters are accepted
+into the Owner's existing private Telegram Conversation. The route responds
+immediately with HTTP 202 and a short acknowledgement; Bud's substantive reply,
+clarifications, and Proposal approvals remain in Telegram. The capture token
+cannot itself approve a Calendar or Tasks write.
+
 ## Calendar reads
 
 Bud combines an explicit Read Set of up to 10 Calendars. Configure their IDs as

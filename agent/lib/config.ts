@@ -8,6 +8,7 @@ export interface BudConfig {
   googleTasksListId: string;
   modelId: string;
   ownerId: string;
+  siriCaptureToken?: string;
   telegramBotToken: string;
   telegramWebhookSecret: string;
   tasksResultLimit: number;
@@ -50,6 +51,7 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
       ? DEFAULT_TRANSCRIPTION_MAX_DURATION_SECONDS
       : Number(environment.TELEGRAM_VOICE_MAX_DURATION_SECONDS);
   const ownerId = environment.TELEGRAM_OWNER_ID?.trim();
+  const siriCaptureToken = environment.BUD_SIRI_CAPTURE_TOKEN?.trim() || undefined;
   const telegramBotToken = environment.TELEGRAM_BOT_TOKEN?.trim();
   const telegramWebhookSecret =
     environment.TELEGRAM_WEBHOOK_SECRET_TOKEN?.trim();
@@ -75,6 +77,9 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   if (!ownerId || !/^[1-9]\d*$/.test(ownerId)) {
     errors.push("TELEGRAM_OWNER_ID must be a positive numeric Telegram user ID");
   }
+  if (siriCaptureToken && siriCaptureToken.length < 32) {
+    errors.push("BUD_SIRI_CAPTURE_TOKEN must contain at least 32 characters");
+  }
   if (!telegramBotToken) {
     errors.push("TELEGRAM_BOT_TOKEN is required");
   }
@@ -97,6 +102,7 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
     googleTasksListId,
     modelId: environment.BUD_MODEL_ID?.trim() || DEFAULT_MODEL_ID,
     ownerId: ownerId!,
+    ...(siriCaptureToken ? { siriCaptureToken } : {}),
     telegramBotToken: telegramBotToken!,
     telegramWebhookSecret: telegramWebhookSecret!,
     tasksResultLimit,
