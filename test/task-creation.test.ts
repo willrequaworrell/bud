@@ -8,7 +8,8 @@ import {
   createCreateTaskTool, createPrepareDatedTaskTool, createPrepareNotedTaskTool,
   createPrepareTaskTool,
 } from "../agent/lib/tasks-tool.js";
-import type { TasksAdapter } from "../agent/lib/tasks.js";
+import { createFakeCreationGuard } from "../agent/lib/creation-guard.js";
+import { createTasks, type TasksAdapter } from "../agent/lib/tasks.js";
 
 function context(principalId = "telegram:42"): ToolContext {
   return { callId: "call-123", session: { auth: { current: { principalId } } } } as ToolContext;
@@ -151,7 +152,9 @@ it("changes Prepared Write identity when any displayed Task detail changes", asy
 it("rejects a reconstructed Prepared Task before displaying an Approval Request", async () => {
   const tasks = adapter();
   const prepare = createPrepareTaskTool({ adapter: tasks, ownerId: "42" });
-  const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
+  const create = createCreateTaskTool({
+    adapter: tasks, guard: createFakeCreationGuard(), ownerId: "42",
+  });
   const prepared = await prepare.execute({ title: "Fit mouthguard" }, context());
   if (prepared.status !== "ok") throw new Error("expected Prepared Task");
   const schema = create.inputSchema as unknown as {
@@ -163,15 +166,19 @@ it("rejects a reconstructed Prepared Task before displaying an Approval Request"
   } }).success).toBe(false);
 });
 
-it("creates exactly the Prepared Task only through a per-call Approval Request", async () => {
+it("automatically creates exactly one unchanged Prepared Task when the guard permits it", async () => {
   const createTask = vi.fn(async () => ({ taskId: "task-1" }));
   const tasks = adapter(createTask);
   const prepare = createPrepareDatedTaskTool({ adapter: tasks, ownerId: "42" });
-  const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
+  const guard = createFakeCreationGuard(["automatic"]);
+  const create = createCreateTaskTool({ adapter: tasks, guard, ownerId: "42" });
   const prepared = await prepare.execute({ title: "Buy milk", dueDate: "2026-08-03" }, context());
   if (prepared.status !== "ok") throw new Error("expected Prepared Task");
 
-  expect(await create.approval!({} as never)).toBe("user-approval");
+  expect(await create.approval!({
+    callId: "call-123", session: { id: "session-1", auth: { current: { principalId: "telegram:42" } },
+      turn: { id: "turn-1" } },
+  } as never)).toBe("not-applicable");
   expect(createTask).not.toHaveBeenCalled();
   expect(await create.execute({ preparedTask: prepared.preparedTask }, context()))
     .toEqual({ status: "ok", taskId: "task-1" });
@@ -180,11 +187,45 @@ it("creates exactly the Prepared Task only through a per-call Approval Request",
   });
 });
 
+it.each([
+  ["title-only", { title: "Buy milk" }, { title: "Buy milk", dueDate: null, notes: null }],
+  ["dated", { title: "Buy milk", dueDate: "2026-08-03" },
+    { title: "Buy milk", dueDate: "2026-08-03", notes: null }],
+  ["noted", { title: "Buy milk", dueDate: "2026-08-03", notes: "Use whole milk" },
+    { title: "Buy milk", dueDate: "2026-08-03", notes: "Use whole milk" }],
+] as const)("preserves every %s Prepared Task field through automatic creation", async (
+  _kind, input, expectedTask,
+) => {
+  const createTask = vi.fn(async () => ({ taskId: "task-1" }));
+  const tasks = adapter(createTask);
+  const prepared = createTasks(tasks).prepareTask(input);
+  if (prepared.status !== "ok") throw new Error("expected Prepared Task");
+  const create = createCreateTaskTool({
+    adapter: tasks, guard: createFakeCreationGuard(["automatic"]), ownerId: "42",
+  });
+
+  await expect(create.execute({ preparedTask: prepared.preparedTask }, context()))
+    .resolves.toEqual({ status: "ok", taskId: "task-1" });
+  expect(createTask).toHaveBeenCalledWith({ ...expectedTask, idempotencyKey: "call-123" });
+});
+
+it("makes an Approval Request when automatic Task creation is unavailable", async () => {
+  const tasks = adapter();
+  const create = createCreateTaskTool({
+    adapter: tasks, guard: createFakeCreationGuard(["approval-request"]), ownerId: "42",
+  });
+
+  await expect(create.approval!({
+    callId: "call-123", session: { id: "session-1", auth: { current: { principalId: "telegram:42" } },
+      turn: { id: "turn-1" } },
+  } as never)).resolves.toBe("user-approval");
+});
+
 it("rejects a changed or unauthorized Prepared Task without writing", async () => {
   const createTask = vi.fn(async () => ({ taskId: "task-1" }));
   const tasks = adapter(createTask);
   const prepare = createPrepareTaskTool({ adapter: tasks, ownerId: "42" });
-  const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
+  const create = createCreateTaskTool({ adapter: tasks, guard: createFakeCreationGuard(), ownerId: "42" });
   const prepared = await prepare.execute({ title: "Buy milk" }, context());
   if (prepared.status !== "ok") throw new Error("expected Prepared Task");
 

@@ -17,3 +17,10 @@ it("tells the model to exclude a leading Event action verb from an unquoted titl
     "Preserve an action verb when the Owner explicitly quotes it or says it is part of the title.",
   );
 });
+
+it("asks the Owner to select one Task before creating anything from a multiple-Task request", async () => {
+  const instructions = await readFile(coreInstructionsPath, "utf8");
+
+  expect(instructions).toContain("If they request multiple Tasks, ask which single Task to add first");
+  expect(instructions).toContain("do not call a preparation or creation tool");
+});

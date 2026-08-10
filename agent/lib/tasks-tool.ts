@@ -1,7 +1,8 @@
 import { defineTool, type ToolContext } from "eve/tools";
-import { always } from "eve/tools/approval";
 import { z } from "zod";
 
+import { createCreationApprovalPolicy } from "./creation-policy.js";
+import type { CreationGuard } from "./creation-guard.js";
 import {
   createTasks, groupTasks, isPreparedTaskUnchanged, TasksAdapterError, type TasksAdapter,
 } from "./tasks.js";
@@ -78,12 +79,16 @@ export function createPrepareNotedTaskTool(options: { adapter: TasksAdapter; own
   });
 }
 
-export function createCreateTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
+export function createCreateTaskTool(options: {
+  adapter: TasksAdapter;
+  guard: CreationGuard;
+  ownerId: string;
+}) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Create exactly one previously prepared Task. Pass the complete Prepared Task returned by the selected preparation tool through verbatim; never reconstruct, summarize, fill defaults, or alter any field. Every call creates an Approval Request.",
+    description: "Create exactly one previously prepared Task. Pass the complete Prepared Task returned by the selected preparation tool through verbatim; never reconstruct, summarize, fill defaults, or alter any field. The creation policy automatically executes one eligible Task when permitted; otherwise it creates an Approval Request.",
     inputSchema: z.object({ preparedTask: preparedTaskSchema }),
-    approval: always(),
+    approval: createCreationApprovalPolicy({ guard: options.guard, ownerId: options.ownerId }),
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
       return tasks.createTask(input.preparedTask, ctx.callId);
