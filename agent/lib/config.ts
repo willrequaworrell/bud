@@ -15,6 +15,7 @@ export interface BudConfig {
   transcriptionMaxBytes: number;
   transcriptionMaxDurationSeconds: number;
   transcriptionModel: string;
+  upstashRedis?: { readonly token: string; readonly url: string };
 }
 
 type Environment = Readonly<Record<string, string | undefined>>;
@@ -55,6 +56,8 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
   const telegramBotToken = environment.TELEGRAM_BOT_TOKEN?.trim();
   const telegramWebhookSecret =
     environment.TELEGRAM_WEBHOOK_SECRET_TOKEN?.trim();
+  const upstashRedisRestToken = environment.UPSTASH_REDIS_REST_TOKEN?.trim();
+  const upstashRedisRestUrl = environment.UPSTASH_REDIS_REST_URL?.trim();
 
   if (!googleOAuthClientId) errors.push("GOOGLE_OAUTH_CLIENT_ID is required");
   if (!googleOAuthClientSecret) errors.push("GOOGLE_OAUTH_CLIENT_SECRET is required");
@@ -109,5 +112,8 @@ export function loadConfig(environment: Environment = process.env): BudConfig {
     transcriptionMaxBytes,
     transcriptionMaxDurationSeconds,
     transcriptionModel: environment.BUD_TRANSCRIPTION_MODEL?.trim() || DEFAULT_TRANSCRIPTION_MODEL,
+    ...(upstashRedisRestToken && upstashRedisRestUrl
+      ? { upstashRedis: { token: upstashRedisRestToken, url: upstashRedisRestUrl } }
+      : {}),
   };
 }

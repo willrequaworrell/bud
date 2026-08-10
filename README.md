@@ -33,6 +33,19 @@ filesystem, web fetch/search, and delegation tools are disabled explicitly.
 
 Configuration errors name invalid variables but never include their values.
 
+## Durable creation guard
+
+Automatic creation is protected by an Owner-scoped Upstash Redis rolling window.
+Install **Upstash Redis** through the current Vercel Marketplace integration and
+allow it to add `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to the
+deployment. Copy those same variables to local development when exercising the
+guard. Do not use retired Vercel KV packages or their `KV_REST_API_*` variables.
+
+If either Upstash variable is absent, invalid, or the service cannot be reached,
+Bud safely requests approval instead of granting automatic creation. Existing
+creation tools remain approval-gated until their respective policy tickets adopt
+the guard.
+
 ## Voice notes
 
 Owner voice notes are downloaded from Telegram and sent through a replaceable

@@ -53,6 +53,27 @@ describe("configuration", () => {
     });
   });
 
+  it("accepts the current Upstash Marketplace REST integration without making automatic creation fail open", () => {
+    const required = {
+      GOOGLE_OAUTH_CLIENT_ID: "client-id",
+      GOOGLE_OAUTH_CLIENT_SECRET: "client-secret",
+      GOOGLE_OAUTH_REFRESH_TOKEN: "refresh-token",
+      TELEGRAM_OWNER_ID: "42",
+      TELEGRAM_BOT_TOKEN: "bot-token",
+      TELEGRAM_WEBHOOK_SECRET_TOKEN: "webhook-secret",
+    };
+
+    expect(loadConfig({
+      ...required,
+      UPSTASH_REDIS_REST_URL: "https://example.upstash.io",
+      UPSTASH_REDIS_REST_TOKEN: "upstash-token",
+    })).toMatchObject({
+      upstashRedis: { token: "upstash-token", url: "https://example.upstash.io" },
+    });
+    expect(loadConfig({ ...required, UPSTASH_REDIS_REST_URL: "https://example.upstash.io" }))
+      .not.toHaveProperty("upstashRedis");
+  });
+
   it("configures bounded voice-note transcription", () => {
     const required = {
       GOOGLE_OAUTH_CLIENT_ID: "client-id",
