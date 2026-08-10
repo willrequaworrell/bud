@@ -108,17 +108,24 @@ export function createGoogleCalendarAdapter(
     return candidate.toISOString().replace(/[-:]/g, "").replace(".000", "");
   }
 
-  function matchesEvent(existing: unknown, event: CalendarEventWrite, id: string, proposalHash: string) {
+  function matchesEvent(
+    existing: unknown,
+    event: CalendarEventWrite,
+    id: string,
+    preparedWriteHash: string,
+  ) {
     const prior = existing as {
       id?: string; summary?: string; location?: string; description?: string;
       start?: { date?: string; dateTime?: string }; end?: { date?: string; dateTime?: string };
       reminders?: { useDefault?: boolean }; recurrence?: string[];
-      extendedProperties?: { private?: { budProposalHash?: string } };
+      extendedProperties?: { private?: { budPreparedWriteHash?: string } };
     };
+    const storedPreparedWriteHash =
+      prior.extendedProperties?.private?.budPreparedWriteHash;
     const common = prior.id === id && prior.summary === event.title &&
       (prior.location ?? null) === event.location && (prior.description ?? null) === event.description &&
       prior.reminders?.useDefault === true &&
-      prior.extendedProperties?.private?.budProposalHash === proposalHash &&
+      (storedPreparedWriteHash === undefined || storedPreparedWriteHash === preparedWriteHash) &&
       JSON.stringify(prior.recurrence ?? []) === JSON.stringify(event.recurrence ? [recurrenceRule({
         ...event, recurrence: event.recurrence,
       })] : []);
@@ -154,11 +161,11 @@ export function createGoogleCalendarAdapter(
         recurrence: NonNullable<CalendarEventWrite["recurrence"]>;
       })] } : {}),
     };
-    const proposalHash = createHash("sha256").update(JSON.stringify(details)).digest("hex");
+    const preparedWriteHash = createHash("sha256").update(JSON.stringify(details)).digest("hex");
     const body = {
       id: googleEventId(event.idempotencyKey),
       ...details,
-      extendedProperties: { private: { budProposalHash: proposalHash } },
+      extendedProperties: { private: { budPreparedWriteHash: preparedWriteHash } },
     };
     const calendarPath = `/calendars/${encodeURIComponent(options.writeCalendarId)}`;
     let payload: { id?: string };
@@ -169,7 +176,7 @@ export function createGoogleCalendarAdapter(
     } catch (error) {
       if (!(error instanceof GoogleEventConflict)) throw error;
       const existing = await googleGet(`${calendarPath}/events/${body.id}`);
-      if (!matchesEvent(existing, event, body.id, proposalHash)) {
+      if (!matchesEvent(existing, event, body.id, preparedWriteHash)) {
         throw new CalendarAdapterError("unavailable");
       }
       payload = existing as { id?: string };

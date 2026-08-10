@@ -4,7 +4,7 @@ Date: 2026-08-07
 
 ## Question
 
-What is the smallest secure bridge that lets the Owner speak to Bud in passing, while preserving Bud's existing Owner authentication and Proposal approval boundaries?
+What is the smallest secure bridge that lets the Owner speak to Bud in passing, while preserving Bud's existing Owner authentication and Approval Request boundaries?
 
 ## Conclusion
 
@@ -12,7 +12,7 @@ Try the **Telegram Siri-contact path first**, because it may already provide the
 
 This contact convention is an undocumented Telegram-iOS behavior discovered through a [user-supplied lead](https://www.hongkiat.com/blog/use-siri-message-telegram-bot/), not a public Telegram API contract. Apple does officially define Siri messaging intents that let a messaging app send a message to designated recipients, and those intents do not inherently require an unlocked device ([Apple `INSendMessageIntent`](https://developer.apple.com/documentation/Intents/INSendMessageIntent)). Apple also says compatible third-party messaging apps can be controlled with Siri in CarPlay ([Apple CarPlay guide](https://support.apple.com/en-ie/guide/iphone/iph206c570e3/ios)). The exact Telegram bot-contact resolution must therefore be treated as a device prototype, not an architectural dependency.
 
-If that path is unreliable or too Telegram-specific, build a personal Shortcut named **Tell Bud** that collects one utterance and `POST`s it to a narrow Bud capture endpoint. A native iOS app and App Intent are not necessary for this MVP. The server should acknowledge capture quickly, process the request using Bud's existing agent and domain tools, and route any clarification or Proposal approval back to Telegram.
+If that path is unreliable or too Telegram-specific, build a personal Shortcut named **Tell Bud** that collects one utterance and `POST`s it to a narrow Bud capture endpoint. A native iOS app and App Intent are not necessary for this MVP. The server should acknowledge capture quickly, process the request using Bud's existing agent and domain tools, and route any clarification or Approval Request back to Telegram.
 
 ## Why this fits the current Bud architecture
 
@@ -20,18 +20,18 @@ Bud currently has three relevant boundaries:
 
 1. Telegram accepts only private text from the configured Owner. `isOwnerPrivateText`/`ownerPrivateRawMessage` require a private chat and matching Telegram `from.id`.
 2. The authenticated Eve principal is built as `telegram:<Owner ID>` with Telegram webhook provenance.
-3. Calendar and Task writes remain behind immutable Proposals, Owner reauthorization, and native Eve approval. A changed Proposal needs fresh approval.
+3. Calendar and Task writes remain behind immutable Prepared Writes, Owner reauthorization, and native Eve approval. A changed Prepared Write needs a fresh Approval Request.
 
 The direct Telegram Siri path naturally crosses boundary 1 as a real Owner message. It is therefore the lowest-risk path.
 
-A direct HTTP endpoint is a new authenticated ingress. It must not call Google Calendar or Tasks directly, and it must not treat possession of a capture token as approval for an external write. It should enter the same conversational/tool path as Telegram and preserve the Proposal boundaries. Today, Calendar and Task tools authorize the exact principal ID `telegram:<Owner ID>`, so a new channel either needs to mint that same canonical Owner principal after verifying its own credential, or the codebase should first separate the domain concept `Owner` from the Telegram-specific principal spelling. That is an architectural decision, not something the Shortcut should work around.
+A direct HTTP endpoint is a new authenticated ingress. It must not call Google Calendar or Tasks directly, and it must not treat possession of a capture token as approval for an external write. It should enter the same conversational/tool path as Telegram and preserve the Prepared Write boundaries. Today, Calendar and Task tools authorize the exact principal ID `telegram:<Owner ID>`, so a new channel either needs to mint that same canonical Owner principal after verifying its own credential, or the codebase should first separate the domain concept `Owner` from the Telegram-specific principal spelling. That is an architectural decision, not something the Shortcut should work around.
 
 ## Option comparison
 
 | Option | Owner experience | Bud changes | Security/architecture | Recommendation |
 |---|---|---:|---|---|
 | Siri → Telegram contact → Bud | “Message Bud on Telegram,” dictate, optionally confirm | None if the Telegram-iOS contact behavior works | Genuine Telegram Owner message; existing webhook and approval flow stay intact | **Prototype first** |
-| Personal Shortcut → Bud HTTPS capture endpoint | “Tell Bud,” answer prompt, hear receipt | New ingress and cross-channel delivery | Needs a separate capture credential, replay handling, Owner mapping, and strict preservation of Proposal approval | **MVP fallback / phase 1** |
+| Personal Shortcut → Bud HTTPS capture endpoint | “Tell Bud,” answer prompt, hear receipt | New ingress and cross-channel delivery | Needs a separate capture credential, replay handling, Owner mapping, and strict preservation of Approval Requests | **MVP fallback / phase 1** |
 | Personal Shortcut → synchronous agent webhook → Speak Text | Custom spoken phrase, dictate, wait, hear full agent answer | Same new ingress, plus synchronous agent execution | Simple demo path, but long-running tools, authentication, replay, failures, and approval UX all remain | **Useful prototype variant, not Bud's default** |
 | Shortcut → Telegram Bot API | Custom voice Shortcut posts to `sendMessage` | Superficially small | Wrong direction: `sendMessage` sends *as the bot*, not as the Owner, so it is not an inbound Owner update; putting the bot token on the phone grants full bot control | **Do not use** |
 | Telegram deep link | Opens Telegram or starts a bot interaction | Little or none | Public bot links carry a bounded start parameter and present a Start action; draft/share links open UI rather than silently delivering an arbitrary Owner message | **Not the hands-free bridge** |
@@ -60,7 +60,7 @@ If it works, this path is unusually good for Bud:
 - No additional credential is created or copied to the phone.
 - Telegram establishes the sender identity Bud already trusts.
 - The request enters the existing Conversation rather than creating a parallel inbox.
-- Clarifying replies and Proposal buttons appear in the same chat.
+- Clarifying replies and Approval Request buttons appear in the same chat.
 - It tests the real behavioral hypothesis—whether hands-free capture changes usage—before any implementation work.
 
 Its weaknesses are dependence on an undocumented Telegram-iOS convention, a less natural invocation phrase, Siri/Telegram confirmation behavior, and limited control over the acknowledgement. A Telegram update could break it.
@@ -86,7 +86,7 @@ Recommended actions:
 4. Read a small JSON response such as `{ "status": "accepted", "acknowledgement": "Got it. I sent that to Bud." }`.
 5. Use **Stop and Output → Respond** so Siri has an explicit completion response ([Apple Stop and Output](https://support.apple.com/en-ca/guide/shortcuts/apda9578f70f/ios)). Optionally also use **Show Notification** for a persistent visual receipt; it posts immediately and lets the Shortcut continue ([Apple Show Notification](https://support.apple.com/guide/shortcuts/use-the-show-notification-action-apd2175adcab/ios)).
 
-The endpoint should return the receipt quickly. It should not hold the Siri invocation open while a model reasons, calls Google, asks a clarification, or waits for approval. Bud can send the substantive answer or Proposal to Telegram afterward.
+The endpoint should return the receipt quickly. It should not hold the Siri invocation open while a model reasons, calls Google, asks a clarification, or waits for approval. Bud can send the substantive answer or Approval Request to Telegram afterward.
 
 ### What the Justin Melendez video demonstrates
 
@@ -106,7 +106,7 @@ Bud should not copy several demo choices unchanged:
 
 - **Stop on Tap** undermines the desired hands-free interaction. Test stop-after-pause first, with Ask for Input as the alternative.
 - The video shows a test webhook URL and no request authentication, replay protection, or Owner binding. Bud's endpoint needs the controls in the security section below.
-- The demo lets the remote agent act on CRM tools before returning. Bud must retain its immutable Proposal and explicit approval boundaries for Calendar and Task writes.
+- The demo lets the remote agent act on CRM tools before returning. Bud must retain its immutable Prepared Write and explicit Approval Request boundaries for Calendar and Task writes.
 - A synchronous full-agent response is attractive for read-only, fast questions, but model/tool latency and clarification or approval make it a poor universal transport contract. Bud's default should acknowledge quickly and continue through Telegram; a later bounded “quick answer” mode could speak a synchronous response under a strict timeout.
 - Voice Control is an iPhone accessibility subsystem, not the same cross-device invocation as asking Siri to run a Shortcut. Apple notes that when Voice Control is on, standard iOS Dictation is unavailable ([Apple Voice Control commands guide](https://support.apple.com/en-lamr/guide/iphone/-iph2c21a3c88/ios)); the interaction between Voice Control and the Shortcut's Dictate Text action therefore needs device testing.
 
@@ -148,7 +148,7 @@ For a personal prototype:
 - Require `clientRequestId` and store a bounded deduplication record. Return the same receipt for retries with the same ID. This protects against accidental double execution when Siri or the network retries.
 - Log request IDs and outcomes, never tokens or full Authorization headers. Avoid logging private utterances unless deliberately needed for the product.
 - Map the capture token server-side to the one configured Owner. Do not accept `ownerId` from the body.
-- Keep Proposal approval separate. A valid capture token proves who may speak to Bud; it is not an approval click and cannot bypass Event/Task Proposal identity checks.
+- Keep Approval Requests separate. A valid capture token proves who may speak to Bud; it is not an approval click and cannot bypass Prepared Event/Task identity checks.
 
 For a later distributable system, prefer per-device enrollment, short-lived credentials, revocation UI, and app-managed secure storage. HTTP Message Signatures are a standardized proof-of-possession option if replay-resistant signed requests become necessary, but they would add complexity beyond a personal Shortcut MVP ([RFC 9421](https://www.rfc-editor.org/rfc/rfc9421.html)).
 
@@ -182,7 +182,7 @@ Apple's App Intents framework exposes app actions directly to Siri and Shortcuts
 1. Configure the Telegram bot contact from the supplied lead.
 2. Test iPhone unlocked and locked, then AirPods and CarPlay if relevant.
 3. Use it for one week and note whether requests actually increase.
-4. Record friction: invocation phrase, confirmation, recipient resolution, response visibility, and Proposal approval handoff.
+4. Record friction: invocation phrase, confirmation, recipient resolution, response visibility, and Approval Request handoff.
 
 ### Phase 1 — capture-only Shortcut and endpoint
 
@@ -190,12 +190,12 @@ Apple's App Intents framework exposes app actions directly to Siri and Shortcuts
 2. Add one capture-only token, body limits, rate limiting, and idempotent request IDs.
 3. Return a receipt immediately.
 4. Deliver Bud's substantive response and all approvals through Telegram.
-5. Preserve the existing immutable Proposal boundary; do not add direct Calendar/Tasks mutation to `/capture`.
+5. Preserve the existing immutable Prepared Write boundary; do not add direct Calendar/Tasks mutation to `/capture`.
 
 ### Phase 2 — tighter conversational integration
 
 1. Give Siri captures continuity with the Owner's active Bud Conversation.
-2. Define behavior when that Conversation already has a pending Proposal. The current Telegram rule refuses unrelated work until approval/denial/reset; Siri ingress should not create a bypass.
+2. Define behavior when that Conversation already has a pending Approval Request. The current Telegram rule refuses unrelated work until approval/denial/reset; Siri ingress should not create a bypass.
 3. Add delivery receipts and failure notifications.
 4. Decide whether a dedicated Capture/Inbox domain concept is useful, rather than forcing every utterance into immediate agent execution.
 
@@ -211,14 +211,14 @@ Run every test against a non-production or clearly reversible Bud setup where pr
 |---|---|---|
 | Telegram contact | “Siri, message Bud on Telegram” while unlocked | Correct bot resolves; genuine Owner text reaches existing Conversation |
 | Telegram contact | Same while phone is locked | No touch/unlock if that is a product requirement; otherwise document exact friction |
-| Telegram contact | Task/Event request | Existing Proposal appears in Telegram; no write occurs before approval |
+| Telegram contact | Task/Event request | Existing Approval Request appears in Telegram; no write occurs before approval |
 | Telegram contact | CarPlay / AirPods | Recipient and dictated content are correct; confirmation behavior is acceptable |
 | Shortcut input | Ask for Input unlocked and locked | Siri accepts a spoken answer without opening UI or requiring touch |
 | Shortcut alternative | Dictate Text unlocked and locked | Compare reliability and whether Shortcuts opens |
 | HTTP | Wi-Fi and cellular | One capture, quick acknowledgement, correct Telegram follow-up |
 | HTTP failures | Offline, timeout, 401, 429, 500, malformed JSON | Short, truthful Siri response; no false success |
 | Replay | Submit the same `clientRequestId` twice | One logical capture and stable receipt |
-| Pending Proposal | Submit unrelated Siri capture while approval is pending | Existing one-pending-Proposal policy is preserved |
+| Pending Approval Request | Submit unrelated Siri capture while approval is pending | Existing one-pending-Approval-Request policy is preserved |
 | Phrase | “Tell Bud,” “Capture for Bud,” noisy room, namesake contact | No collision with contacts or built-in Siri commands |
 | Invocation mode | Siri name vs Voice Control command vs Vocal Shortcut | Record microphone/listening requirements, accidental triggers, lock behavior, and whether Dictate Text still works |
 | Other devices | Apple Watch and HomePod | Record where execution occurs and whether prompts/responses remain hands-free |
@@ -242,4 +242,4 @@ Run every test against a non-production or clearly reversible Bud setup where pr
 
 The fastest honest experiment is the Telegram Siri-contact path. It directly tests the desired “say it in passing” behavior and, if successful, already honors Bud's security model better than a new endpoint.
 
-Do not build a Shortcut that contains the Telegram bot token. If the Telegram-contact experiment fails or proves brittle, implement the narrow personal Shortcut endpoint next. Keep it capture-only at the transport boundary, authenticate it with a revocable low-scope token, respond immediately, and send all complex conversation and Proposal approval back through Telegram. Native App Intents should remain a later productization step.
+Do not build a Shortcut that contains the Telegram bot token. If the Telegram-contact experiment fails or proves brittle, implement the narrow personal Shortcut endpoint next. Keep it capture-only at the transport boundary, authenticate it with a revocable low-scope token, respond immediately, and send all complex conversation and Approval Requests back through Telegram. Native App Intents should remain a later productization step.

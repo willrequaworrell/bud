@@ -1,9 +1,9 @@
 import { mockModel } from "eve/evals";
 import { expect, it, vi } from "vitest";
 
-import { createProposalCorrectionClassifier } from "../agent/lib/proposal-correction.js";
+import { createPreparedWriteCorrectionClassifier } from "../agent/lib/prepared-write-correction.js";
 
-it("classifies against only the pending Proposal and Owner text without tools", async () => {
+it("classifies against only the pending Prepared Write and Owner text without tools", async () => {
   const responder = vi.fn(({ messages, tools, lastUserMessage }) => {
     expect(tools).toEqual([]);
     expect(messages).toEqual([
@@ -17,17 +17,17 @@ it("classifies against only the pending Proposal and Owner text without tools", 
       ? '{"result":"correction"}'
       : '{"result":"unrelated"}';
   });
-  const classify = createProposalCorrectionClassifier(mockModel(responder));
+  const classify = createPreparedWriteCorrectionClassifier(mockModel(responder));
 
   await expect(classify({
     message: "Wait, make that 1pm",
-    proposal: { title: "Lunch", startLocal: "2026-08-07T12:00" },
-    proposalType: "event",
+    preparedWrite: { title: "Lunch", startLocal: "2026-08-07T12:00" },
+    preparedWriteType: "event",
   })).resolves.toBe(true);
   await expect(classify({
     message: "What's on my calendar today?",
-    proposal: { title: "Lunch", startLocal: "2026-08-07T12:00" },
-    proposalType: "event",
+    preparedWrite: { title: "Lunch", startLocal: "2026-08-07T12:00" },
+    preparedWriteType: "event",
   })).resolves.toBe(false);
   expect(responder).toHaveBeenCalledTimes(2);
 });

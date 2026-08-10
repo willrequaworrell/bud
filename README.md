@@ -70,7 +70,7 @@ Content-Type: application/json
 Authenticated, non-empty messages of at most 2,000 characters are accepted
 into the Owner's existing private Telegram Conversation. The route responds
 immediately with HTTP 202 and a short acknowledgement; Bud's substantive reply,
-clarifications, and Proposal approvals remain in Telegram. The capture token
+clarifications, and Approval Requests remain in Telegram. The capture token
 cannot itself approve a Calendar or Tasks write.
 
 ## Calendar reads
@@ -107,7 +107,7 @@ reads are re-authorized inside the tool as well as at Telegram ingress.
 
 ## Calendar creation
 
-Bud prepares one immutable timed or all-day Event Proposal before requesting a
+Bud prepares one immutable timed or all-day Prepared Event before requesting a
 write. A missing timed duration defaults to 30 minutes. Google Calendar defaults
 supply reminders. Preparation checks the complete Read Set for overlapping
 Events, and creation revalidates those conflicts immediately before writing.
@@ -117,21 +117,21 @@ is limited to one year and 100 occurrences. Specialized rules and one-off
 exceptions are rejected instead of approximated. Attendees, conferencing, and
 custom reminders are not part of this slice.
 
-Telegram displays the Event details and any conflict warnings above Eve's native
-approval buttons. Approve writes exactly the Proposal to the configured Write
-Calendar; Deny writes nothing. A changed conflict requires a fresh Proposal and
-approval. While approval is pending, resolve it or use `/reset` before starting
-another request.
+Telegram displays the Prepared Event details and any conflict warnings above
+Eve's native Approval Request buttons. Approve writes exactly the Prepared Event
+to the configured Write Calendar; Deny writes nothing. A changed conflict
+requires a fresh Prepared Event and Approval Request. While an Approval Request
+is pending, resolve it or use `/reset` before starting another request.
 
 ## Task creation
 
-Bud prepares an immutable Task Proposal containing a required title. By default,
+Bud prepares an immutable Prepared Task containing a required title. By default,
 the Task is structurally undated and has no notes; a separate detailed path adds
-notes or a date-only due date only when explicitly requested. Telegram displays every
-field before Eve's native approval buttons. Approve writes exactly that Proposal
-to the configured Tasks list; Deny writes nothing. Revisions require a new
-Proposal and approval, and the same one-pending-Proposal Conversation rule used
-by Calendar Events applies.
+notes or a date-only due date only when explicitly requested. Telegram displays
+every field before Eve's native Approval Request buttons. Approve writes exactly
+that Prepared Task to the configured Tasks list; Deny writes nothing. Revisions
+require a new Prepared Task and Approval Request. The same rule allowing only
+one pending Approval Request per Conversation applies to Calendar Events.
 
 Google Tasks cannot retain a due time. When a Task request includes a specific
 time, Bud explains the limitation and offers a Calendar Event instead of silently

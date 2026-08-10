@@ -53,13 +53,13 @@ it("prepares without approval and creates only through per-call approval", async
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
     recurrence: { frequency: "daily", interval: 1, end: { kind: "count", count: 3 } },
   }, context("telegram:42"));
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
   expect(prepare.approval).toBeUndefined();
   expect(await create.approval!({} as never)).toBe("user-approval");
   expect(await create.approval!({} as never)).toBe("user-approval");
   expect(createEvent).not.toHaveBeenCalled();
-  expect(await create.execute({ proposal: prepared.proposal }, context("telegram:42")))
+  expect(await create.execute({ preparedEvent: prepared.preparedEvent }, context("telegram:42")))
     .toEqual({ status: "ok", eventId: "event-1" });
   expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({ idempotencyKey: "call-123" }));
 });
@@ -86,7 +86,7 @@ it("requires the model to normalize timed Event fields before calling Calendar",
   }).success).toBe(false);
 });
 
-it("serializes only supported bounded recurrence into the pending Event Proposal", async () => {
+it("serializes only supported bounded recurrence into the pending Prepared Event", async () => {
   const tool = createPrepareCalendarEventTool({
     adapter: { async getDefaultTimeZone() { return "UTC"; }, async listEvents() { return []; } },
     ownerId: "42", now: () => new Date("2026-08-01T00:00:00Z"),
@@ -106,7 +106,7 @@ it("serializes only supported bounded recurrence into the pending Event Proposal
   } }).success).toBe(false);
 
   expect(await tool.execute(supported as never, context("telegram:42")))
-    .toMatchObject({ status: "ok", proposal: { recurrence: supported.recurrence } });
+    .toMatchObject({ status: "ok", preparedEvent: { recurrence: supported.recurrence } });
   expect(tool.description).toContain("ask the Owner for a shorter end date or smaller occurrence count");
 });
 
@@ -116,14 +116,14 @@ it("refuses Calendar Event creation when the executing caller is not the Owner",
     adapter: { async getDefaultTimeZone() { return "UTC"; }, async listEvents() { return []; }, createEvent },
     ownerId: "42",
   });
-  const proposal = {
-    kind: "all-day" as const, proposalId: "0".repeat(64), title: "Private",
+  const preparedEvent = {
+    kind: "all-day" as const, preparedWriteId: "0".repeat(64), title: "Private",
     startDate: "2026-08-07", throughDate: "2026-08-07", timeZone: "UTC",
     conflictTimeZone: "UTC",
     location: null, description: null, warnings: [],
   };
 
-  expect(await create.execute({ proposal }, context("telegram:99")))
+  expect(await create.execute({ preparedEvent }, context("telegram:99")))
     .toEqual({ status: "error", reason: "forbidden" });
   expect(createEvent).not.toHaveBeenCalled();
 });

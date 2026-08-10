@@ -127,7 +127,7 @@ it("orders Events across Calendar sources while preserving matching Events", asy
   ] });
 });
 
-it("prepares a complete 30-minute timed Event Proposal without writing", async () => {
+it("prepares a complete 30-minute timed Prepared Event without writing", async () => {
   const createEvent = vi.fn();
   const calendar = createCalendar({
     async getDefaultTimeZone() { return "America/New_York"; },
@@ -143,9 +143,9 @@ it("prepares a complete 30-minute timed Event Proposal without writing", async (
 
   expect(result).toEqual({
     status: "ok",
-    proposal: {
+    preparedEvent: {
       kind: "timed",
-      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/),
+      preparedWriteId: expect.stringMatching(/^[a-f0-9]{64}$/),
       title: "Dentist",
       startLocal: "2026-08-03T09:00",
       endLocal: "2026-08-03T09:30",
@@ -166,7 +166,7 @@ it.each([
     { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"], end: { kind: "until", date: "2026-10-01" } }],
   [{ frequency: "monthly", interval: 1, end: { kind: "count", count: 4 } },
     { frequency: "monthly", interval: 1, end: { kind: "count", count: 4 } }],
-] as const)("prepares a bounded recurring Event Proposal", async (recurrence, expected) => {
+] as const)("prepares a bounded recurring Prepared Event", async (recurrence, expected) => {
   const calendar = createCalendar({
     async getDefaultTimeZone() { return "America/New_York"; },
     async listEvents() { return []; },
@@ -175,7 +175,7 @@ it.each([
   expect(await calendar.prepareEvent({
     kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
     recurrence: recurrence as unknown as EventRecurrence,
-  })).toMatchObject({ status: "ok", proposal: { recurrence: expected } });
+  })).toMatchObject({ status: "ok", preparedEvent: { recurrence: expected } });
 });
 
 it.each([
@@ -206,19 +206,19 @@ it("creates exactly the approved recurrence with the retry key", async () => {
     recurrence: { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"],
       end: { kind: "count", count: 8 } },
   });
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
-  await calendar.createEvent(prepared.proposal, "same-call");
+  await calendar.createEvent(prepared.preparedEvent, "same-call");
   expect(createEvent).toHaveBeenCalledWith(expect.objectContaining({
     recurrence: { frequency: "weekly", interval: 2, weekdays: ["MO", "TH"],
       end: { kind: "count", count: 8 } },
     idempotencyKey: "same-call",
   }));
   await expect(calendar.createEvent({
-    ...prepared.proposal,
+    ...prepared.preparedEvent,
     recurrence: { frequency: "weekly", interval: 1, weekdays: ["MO"],
       end: { kind: "count", count: 8 } },
-  }, "same-call")).resolves.toEqual({ status: "error", reason: "proposal_changed" });
+  }, "same-call")).resolves.toEqual({ status: "error", reason: "prepared_write_changed" });
 });
 
 it("anchors interval weeks to Monday like the emitted Google recurrence rule", async () => {
@@ -233,7 +233,7 @@ it("anchors interval weeks to Monday like the emitted Google recurrence rule", a
   })).toEqual(expect.objectContaining({ status: "error", reason: "recurrence_too_large" }));
 });
 
-it("creates exactly an unchanged multi-day Event Proposal with a retry key", async () => {
+it("creates exactly an unchanged multi-day Prepared Event with a retry key", async () => {
   const createEvent = vi.fn(async () => ({ eventId: "google-event" }));
   const calendar = createCalendar({
     async getDefaultTimeZone() { return "America/New_York"; },
@@ -243,9 +243,9 @@ it("creates exactly an unchanged multi-day Event Proposal with a retry key", asy
     kind: "all-day", title: "Beach trip", startDate: "2026-08-07",
     throughDate: "2026-08-09", location: "Cape May",
   });
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
-  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+  expect(await calendar.createEvent(prepared.preparedEvent, "call-123")).toEqual({
     status: "ok", eventId: "google-event",
   });
   expect(createEvent).toHaveBeenCalledWith({
@@ -254,24 +254,24 @@ it("creates exactly an unchanged multi-day Event Proposal with a retry key", asy
     location: "Cape May", description: null, idempotencyKey: "call-123",
   });
 
-  const proposal = prepared.proposal;
-  if (proposal.kind !== "all-day") throw new Error("expected all-day proposal");
+  const preparedEvent = prepared.preparedEvent;
+  if (preparedEvent.kind !== "all-day") throw new Error("expected all-day Prepared Event");
   expect(await calendar.createEvent({
-    proposalId: proposal.proposalId,
-    warnings: proposal.warnings,
-    title: proposal.title,
-    kind: proposal.kind,
-    timeZone: proposal.timeZone,
-    conflictTimeZone: proposal.conflictTimeZone,
-    throughDate: proposal.throughDate,
-    startDate: proposal.startDate,
-    description: proposal.description,
-    location: proposal.location,
+    preparedWriteId: preparedEvent.preparedWriteId,
+    warnings: preparedEvent.warnings,
+    title: preparedEvent.title,
+    kind: preparedEvent.kind,
+    timeZone: preparedEvent.timeZone,
+    conflictTimeZone: preparedEvent.conflictTimeZone,
+    throughDate: preparedEvent.throughDate,
+    startDate: preparedEvent.startDate,
+    description: preparedEvent.description,
+    location: preparedEvent.location,
   }, "call-456")).toEqual({ status: "ok", eventId: "google-event" });
 
   await expect(calendar.createEvent(
-    { ...prepared.proposal, title: "Changed after approval" }, "call-123",
-  )).resolves.toEqual({ status: "error", reason: "proposal_changed" });
+    { ...prepared.preparedEvent, title: "Changed after approval" }, "call-123",
+  )).resolves.toEqual({ status: "error", reason: "prepared_write_changed" });
 });
 
 it("warns before preparing an Event whose start is in the past", async () => {
@@ -282,7 +282,7 @@ it("warns before preparing an Event whose start is in the past", async () => {
 
   expect(await calendar.prepareEvent({
     kind: "all-day", title: "Backfill", startDate: "2026-08-09",
-  })).toMatchObject({ status: "ok", proposal: { warnings: [
+  })).toMatchObject({ status: "ok", preparedEvent: { warnings: [
     { kind: "starts-in-past", message: "Starts in the past" },
   ] } });
 });
@@ -304,7 +304,7 @@ it("prepares a conflict-free Event after checking its exact interval", async () 
     end: "2026-08-03T13:30:00.000Z",
     timeZone: "America/New_York",
   });
-  expect(result).toMatchObject({ status: "ok", proposal: { warnings: [] } });
+  expect(result).toMatchObject({ status: "ok", preparedEvent: { warnings: [] } });
 });
 
 it("warns about named timed Events that overlap the proposed interval", async () => {
@@ -321,7 +321,7 @@ it("warns about named timed Events that overlap the proposed interval", async ()
     endLocal: "2026-08-03T09:30",
   })).toMatchObject({
     status: "ok",
-    proposal: { warnings: [{
+    preparedEvent: { warnings: [{
       kind: "overlap", message: "Overlaps Team sync (Work)",
       conflict: { kind: "timed", title: "Team sync", source: "Work",
         start: "2026-08-03T13:15:00.000Z", end: "2026-08-03T14:00:00.000Z" },
@@ -329,7 +329,7 @@ it("warns about named timed Events that overlap the proposed interval", async ()
   });
 });
 
-it("warns about all-day Events overlapping a timed proposal in the Write Calendar timezone", async () => {
+it("warns about all-day Events overlapping a timed Prepared Event in the Write Calendar timezone", async () => {
   const calendar = createCalendar({
     async getDefaultTimeZone() { return "America/New_York"; },
     async listEvents() {
@@ -342,7 +342,7 @@ it("warns about all-day Events overlapping a timed proposal in the Write Calenda
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
   })).toMatchObject({
     status: "ok",
-    proposal: { warnings: [{
+    preparedEvent: { warnings: [{
       kind: "overlap", message: "Overlaps Vacation (Personal)",
       conflict: { kind: "all-day", title: "Vacation", source: "Personal",
         startDate: "2026-08-03", endDate: "2026-08-04" },
@@ -350,7 +350,7 @@ it("warns about all-day Events overlapping a timed proposal in the Write Calenda
   });
 });
 
-it("does not present a Proposal when the conflict check fails", async () => {
+it("does not present a Prepared Write when the conflict check fails", async () => {
   const calendar = createCalendar({
     async getDefaultTimeZone() { return "America/New_York"; },
     async listEvents() { throw new CalendarAdapterError("rate_limited"); },
@@ -361,7 +361,7 @@ it("does not present a Proposal when the conflict check fails", async () => {
   })).toEqual({ status: "error", reason: "rate_limited" });
 });
 
-it("warns when an all-day proposal overlaps an Event on any included day", async () => {
+it("warns when an all-day Prepared Event overlaps an Event on any included day", async () => {
   const calendar = createCalendar({
     async getDefaultTimeZone() { return "America/New_York"; },
     async listEvents() {
@@ -375,7 +375,7 @@ it("warns when an all-day proposal overlaps an Event on any included day", async
     throughDate: "2026-08-04",
   })).toMatchObject({
     status: "ok",
-    proposal: { warnings: [{
+    preparedEvent: { warnings: [{
       kind: "overlap", message: "Overlaps Dinner (Family)",
       conflict: { kind: "timed", title: "Dinner", source: "Family",
         start: "2026-08-04T22:00:00.000Z", end: "2026-08-04T23:00:00.000Z" },
@@ -413,9 +413,9 @@ it("invalidates approval when a new conflict appears before creation", async () 
   const prepared = await calendar.prepareEvent({
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
   });
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
-  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+  expect(await calendar.createEvent(prepared.preparedEvent, "call-123")).toEqual({
     status: "error", reason: "conflicts_changed",
   });
   expect(listEvents).toHaveBeenCalledTimes(2);
@@ -433,9 +433,9 @@ it("invalidates approval when a conflict is removed before creation", async () =
   const prepared = await calendar.prepareEvent({
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
   });
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
-  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+  expect(await calendar.createEvent(prepared.preparedEvent, "call-123")).toEqual({
     status: "error", reason: "conflicts_changed",
   });
   expect(createEvent).not.toHaveBeenCalled();
@@ -454,9 +454,9 @@ it("invalidates approval when a same-named conflict changes time", async () => {
   const prepared = await calendar.prepareEvent({
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
   });
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
-  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+  expect(await calendar.createEvent(prepared.preparedEvent, "call-123")).toEqual({
     status: "error", reason: "conflicts_changed",
   });
   expect(createEvent).not.toHaveBeenCalled();
@@ -472,9 +472,9 @@ it("fails closed when conflict revalidation cannot read the Calendar", async () 
   const prepared = await calendar.prepareEvent({
     kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
   });
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
-  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+  expect(await calendar.createEvent(prepared.preparedEvent, "call-123")).toEqual({
     status: "error", reason: "unavailable",
   });
   expect(createEvent).not.toHaveBeenCalled();
@@ -491,9 +491,9 @@ it("invalidates approval when the Write Calendar timezone changes", async () => 
   const prepared = await calendar.prepareEvent({
     kind: "all-day", title: "Vacation", startDate: "2026-08-03",
   });
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Event");
 
-  expect(await calendar.createEvent(prepared.proposal, "call-123")).toEqual({
+  expect(await calendar.createEvent(prepared.preparedEvent, "call-123")).toEqual({
     status: "error", reason: "conflicts_changed",
   });
   expect(createEvent).not.toHaveBeenCalled();

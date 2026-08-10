@@ -51,8 +51,8 @@ async function deliverMedia(
   mediaOptions: {
     config?: BudConfig;
     downloadResponse?: () => Response;
-    pendingProposal?: boolean;
-    proposal?: "task";
+    pendingApprovalRequest?: boolean;
+    preparedTask?: boolean;
     correctionClassifier?: ReturnType<typeof vi.fn>;
   } = {},
 ) {
@@ -87,11 +87,11 @@ async function deliverMedia(
     };
     const telegram = (channel as any).adapter.createAdapterContext(runtime).telegram;
     const reply = await model(payload.message);
-    if (mediaOptions.proposal === "task") {
+    if (mediaOptions.preparedTask) {
       await handleTelegramInputRequested({ requests: [{
         action: { callId: "call-voice", kind: "tool-call", toolName: "create_task",
-          input: { proposal: { title: "Buy milk", dueDate: null, notes: null,
-            proposalId: "immutable-proposal" } } },
+          input: { preparedTask: { title: "Buy milk", dueDate: null, notes: null,
+            preparedWriteId: "immutable-prepared-write" } } },
         allowFreeform: false, display: "confirmation",
         options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
         prompt: "Approve?", requestId: "approval-voice",
@@ -108,13 +108,13 @@ async function deliverMedia(
   }), {
     send, waitUntil(task: Promise<unknown>) { tasks.push(task); },
     async resolveActiveSession() {
-      return mediaOptions.pendingProposal ? { sessionId: "session" } : undefined;
+      return mediaOptions.pendingApprovalRequest ? { sessionId: "session" } : undefined;
     },
     getSession() {
       return { getEventStream: async () => new ReadableStream({ start(controller) {
         controller.enqueue({ type: "input.requested", data: { requests: [{
           action: { kind: "tool-call", toolName: "create_task", callId: "pending-call",
-            input: { proposal: { title: "Existing", dueDate: null, notes: null } } },
+            input: { preparedTask: { title: "Existing", dueDate: null, notes: null } } },
           requestId: "pending-approval", prompt: "Approve?",
         }], sequence: 0, stepIndex: 0, turnId: "turn" } });
         controller.enqueue({ type: "session.waiting", data: {
@@ -130,8 +130,8 @@ async function deliverMedia(
 
 async function deliverWithSessionState(
   activeSession: boolean,
-  pendingProposal: boolean | "resolved",
-  proposalToolName = "create_calendar_event",
+  pendingApprovalRequest: boolean | "resolved",
+  approvalToolName = "create_calendar_event",
   correctionClassifier = vi.fn(async () => false),
   ...updates: unknown[]
 ) {
@@ -139,7 +139,7 @@ async function deliverWithSessionState(
   const authContexts: unknown[] = [];
   const eventStreamStartIndexes: Array<number | undefined> = [];
   const inputResponses: unknown[] = [];
-  const replacementProposals: Array<Record<string, unknown>> = [];
+  const replacementPreparedWrites: Array<Record<string, unknown>> = [];
   const model = vi.fn(async (message: string) => `Model: ${message}`);
   const telegramFetch = vi.fn<typeof fetch>(async (_request, init) => {
     const body = JSON.parse(String(init?.body)) as { text?: string };
@@ -168,18 +168,20 @@ async function deliverWithSessionState(
       } };
       const telegram = (channel as any).adapter.createAdapterContext(runtime).telegram;
       await telegram.sendMessage(reply);
-      const replacementProposal = payload.message === 'Actually the title should be "due tomorrow report"'
-        ? { title: "due tomorrow report", dueDate: null, notes: null, proposalId: "a".repeat(64) }
+      const replacementPreparedWrite = payload.message === 'Actually the title should be "due tomorrow report"'
+        ? { title: "due tomorrow report", dueDate: null, notes: null, preparedWriteId: "a".repeat(64) }
         : payload.message === "Wait, make that 1pm"
           ? { kind: "timed", title: "Practice", startLocal: "2026-08-03T13:00",
-            endLocal: "2026-08-03T13:30", timeZone: "UTC", proposalId: "b".repeat(64) }
+            endLocal: "2026-08-03T13:30", timeZone: "UTC", preparedWriteId: "b".repeat(64) }
           : undefined;
-      if (replacementProposal) {
-        replacementProposals.push(replacementProposal);
+      if (replacementPreparedWrite) {
+        replacementPreparedWrites.push(replacementPreparedWrite);
         await handleTelegramInputRequested({ requests: [{
           action: { callId: "replacement-call", kind: "tool-call",
-            toolName: "kind" in replacementProposal ? "create_calendar_event" : "create_task",
-            input: { proposal: replacementProposal } },
+            toolName: "kind" in replacementPreparedWrite ? "create_calendar_event" : "create_task",
+            input: "kind" in replacementPreparedWrite
+              ? { preparedEvent: replacementPreparedWrite }
+              : { preparedTask: replacementPreparedWrite } },
           allowFreeform: false, display: "confirmation",
           options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
           prompt: "Approve?", requestId: "replacement-approval",
@@ -193,7 +195,7 @@ async function deliverWithSessionState(
       return { getEventStream: async (options?: { startIndex?: number }) => {
         eventStreamStartIndexes.push(options?.startIndex);
         const events: any[] = [];
-        if (pendingProposal) {
+        if (pendingApprovalRequest) {
           events.push(
             { type: "input.requested", data: { requests: [], sequence: 0, stepIndex: 0,
               turnId: "historical-turn" } },
@@ -201,22 +203,23 @@ async function deliverWithSessionState(
               continuationToken: "historical-token", wait: "next-user-message",
             } },
             { type: "input.requested", data: { requests: [{
-              action: { kind: "tool-call", toolName: proposalToolName, callId: "call", input: {
-                proposal: proposalToolName === "create_task"
-                  ? { title: "report", dueDate: "2026-08-07", notes: null,
-                    proposalId: "original-task-proposal" }
-                  : { kind: "timed", title: "Practice", startLocal: "2026-08-03T09:00",
-                    endLocal: "2026-08-03T09:30", timeZone: "UTC", recurrence: {
-                      frequency: "daily", interval: 1, end: { kind: "count", count: 5 },
-                    } },
-              } },
+              action: { kind: "tool-call", toolName: approvalToolName, callId: "call", input:
+                approvalToolName === "create_task"
+                  ? { preparedTask: { title: "report", dueDate: "2026-08-07", notes: null,
+                      preparedWriteId: "original-prepared-task" } }
+                  : { preparedEvent: { kind: "timed", title: "Practice",
+                      startLocal: "2026-08-03T09:00", endLocal: "2026-08-03T09:30",
+                      timeZone: "UTC", recurrence: {
+                        frequency: "daily", interval: 1, end: { kind: "count", count: 5 },
+                      } } },
+              },
               requestId: "approval", prompt: "Approve?",
             }], sequence: 0, stepIndex: 0, turnId: "turn" } },
           );
         }
-        if (pendingProposal === "resolved") {
+        if (pendingApprovalRequest === "resolved") {
           events.push({ type: "action.result", data: {
-            result: { kind: "tool-result", callId: "call", toolName: proposalToolName, output: {} },
+            result: { kind: "tool-result", callId: "call", toolName: approvalToolName, output: {} },
             sequence: 0, stepIndex: 0, turnId: "turn", status: "completed",
           } });
         }
@@ -242,7 +245,7 @@ async function deliverWithSessionState(
     await Promise.all(tasks.splice(0));
   }
   return { authContexts, eventStreamStartIndexes, inputResponses, model, outbound,
-    replacementProposals };
+    replacementPreparedWrites };
 }
 
 async function deliverWithActiveSession(activeSession: boolean, ...updates: unknown[]) {
@@ -270,10 +273,10 @@ describe("Telegram Channel", () => {
     expect(result.outbound).toEqual(["I heard: What's next today?", "Model: What's next today?"]);
   });
 
-  it("makes the transcript visible on a voice-created Proposal before approval", async () => {
+  it("makes the transcript visible on a voice-created Prepared Write before approval", async () => {
     const result = await deliverMedia(mediaUpdate("voice", {
       duration: 8, file_id: "voice-2", file_size: 800, mime_type: "audio/ogg",
-    }), { transcribe: vi.fn(async () => "Create a task to buy milk") }, { proposal: "task" });
+    }), { transcribe: vi.fn(async () => "Create a task to buy milk") }, { preparedTask: true });
 
     expect(result.outbound[0]).toBe("I heard: Create a task to buy milk");
     expect(result.model).toHaveBeenCalledWith("Create a task to buy milk");
@@ -287,17 +290,17 @@ describe("Telegram Channel", () => {
     expect(result.model).toHaveBeenCalledWith("What's next today?");
   });
 
-  it("preserves pending-Proposal serialization for transcribed voice input", async () => {
+  it("preserves pending-Approval-Request serialization for transcribed voice input", async () => {
     const correctionClassifier = vi.fn(async () => true);
     const result = await deliverMedia(mediaUpdate("voice", {
       duration: 8, file_id: "voice-pending", file_size: 800, mime_type: "audio/ogg",
-    }), undefined, { correctionClassifier, pendingProposal: true });
+    }), undefined, { correctionClassifier, pendingApprovalRequest: true });
     expect(correctionClassifier).not.toHaveBeenCalled();
     expect(result.model).not.toHaveBeenCalled();
     expect(result.send).not.toHaveBeenCalled();
     expect(result.outbound).toEqual([
       "I heard: What's next today?",
-      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+      "Please approve or deny the pending Approval Request before starting another request. You can also use /reset.",
     ]);
   });
 
@@ -352,14 +355,14 @@ describe("Telegram Channel", () => {
     expect(result.transcription.transcribe).not.toHaveBeenCalled();
     expect(result.outbound).toEqual(["I can only handle text and Telegram voice notes. Please type your request."]);
   });
-  it("shows Event details and conflict warnings in the approval prompt", async () => {
+  it("shows exact Prepared Event details and conflict warnings in the Approval Request", async () => {
     const post = vi.fn(async () => ({ id: "message-1", raw: null }));
     const state = {} as TelegramChannelState;
 
     await handleTelegramInputRequested({ requests: [{
       action: {
         callId: "call-1",
-        input: { proposal: {
+        input: { preparedEvent: {
           kind: "timed", title: "Dentist",
           startLocal: "2026-08-02T09:00", endLocal: "2026-08-02T09:30",
           timeZone: "America/New_York", location: "Dental Arts", description: null,
@@ -404,7 +407,7 @@ describe("Telegram Channel", () => {
     const post = vi.fn(async () => ({ id: "message-1", raw: null }));
     await handleTelegramInputRequested({ requests: [{
       action: { callId: "call-1", kind: "tool-call", toolName: "create_calendar_event",
-        input: { proposal: { kind: "timed", title: "Practice",
+        input: { preparedEvent: { kind: "timed", title: "Practice",
           startLocal: "2026-08-03T09:00", endLocal: "2026-08-03T09:30",
           timeZone: "America/New_York", location: null, description: null, warnings: [],
           recurrence } } },
@@ -418,7 +421,7 @@ describe("Telegram Channel", () => {
     }));
   });
 
-  it("shows every warning before offering approval when the Proposal needs multiple messages", async () => {
+  it("shows every warning before offering approval when the Prepared Write needs multiple messages", async () => {
     const post = vi.fn(async (_message: unknown) => ({ id: "message-1", raw: null }));
     const warnings = Array.from({ length: 80 }, (_, index) => ({
       kind: "overlap",
@@ -427,7 +430,7 @@ describe("Telegram Channel", () => {
 
     await handleTelegramInputRequested({ requests: [{
       action: { callId: "call-1", kind: "tool-call", toolName: "create_calendar_event",
-        input: { proposal: { kind: "all-day", title: "Retreat",
+        input: { preparedEvent: { kind: "all-day", title: "Retreat",
           startDate: "2026-08-02", throughDate: "2026-08-03", timeZone: "America/New_York",
           location: null, description: null, warnings } } },
       allowFreeform: false, display: "confirmation",
@@ -451,10 +454,15 @@ describe("Telegram Channel", () => {
       ["Create Task?", "", "Buy milk", "Due: 2026-08-03", "Notes: Get oat milk"]],
     [{ title: "Call Sam", notes: null, dueDate: null },
       ["Create Task?", "", "Call Sam", "Due: No due date"]],
-  ] as const)("shows exactly the dated or undated Task in its approval prompt", async (proposal, lines) => {
+  ] as const)("shows exactly the dated or undated Prepared Task in its Approval Request", async (
+    preparedTask,
+    lines,
+  ) => {
     const post = vi.fn(async () => ({ id: "message-1", raw: null }));
     await handleTelegramInputRequested({ requests: [{
-      action: { callId: "call-1", input: { proposal }, kind: "tool-call", toolName: "create_task" },
+      action: {
+        callId: "call-1", input: { preparedTask }, kind: "tool-call", toolName: "create_task",
+      },
       allowFreeform: false, display: "confirmation",
       options: [{ id: "approve", label: "Yes" }, { id: "deny", label: "No" }],
       prompt: "Approve tool call: create_task", requestId: "approval-1",
@@ -486,7 +494,7 @@ describe("Telegram Channel", () => {
     expect(result.authContexts).toEqual([null]);
   });
 
-  it("cancels a pending recurring Event Proposal without starting another model turn", async () => {
+  it("cancels a pending recurring Prepared Event without starting another model turn", async () => {
     const result = await deliverWithActiveSession(true, callbackUpdate(42, "eve:1"));
     expect(result.model).not.toHaveBeenCalled();
     expect(result.inputResponses).toEqual([{
@@ -514,15 +522,15 @@ describe("Telegram Channel", () => {
     expect(result.outbound).toEqual(["Conversation reset."]);
   });
 
-  it("refuses an unrelated Calendar query while a Proposal approval is pending", async () => {
+  it("refuses an unrelated Calendar query while an Approval Request is pending", async () => {
     const result = await deliverWithActiveSession(true, update(42, "What's on my calendar today?"));
     expect(result.model).not.toHaveBeenCalled();
     expect(result.outbound).toEqual([
-      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+      "Please approve or deny the pending Approval Request before starting another request. You can also use /reset.",
     ]);
   });
 
-  it("supersedes a pending Task Proposal before starting a title correction turn", async () => {
+  it("supersedes a pending Prepared Task before starting a title correction turn", async () => {
     const correctionClassifier = vi.fn(async () => true);
     const result = await deliverWithSessionState(
       true, true, "create_task", correctionClassifier,
@@ -531,12 +539,12 @@ describe("Telegram Channel", () => {
 
     expect(correctionClassifier).toHaveBeenCalledWith({
       message: 'Actually the title should be "due tomorrow report"',
-      proposal: expect.objectContaining({ title: "report", dueDate: "2026-08-07" }),
-      proposalType: "task",
+      preparedWrite: expect.objectContaining({ title: "report", dueDate: "2026-08-07" }),
+      preparedWriteType: "task",
     });
     expect(result.inputResponses).toEqual([{ optionId: "deny", requestId: "approval" }]);
     expect(result.model).toHaveBeenCalledWith('Actually the title should be "due tomorrow report"');
-    expect(result.replacementProposals).toEqual([expect.objectContaining({
+    expect(result.replacementPreparedWrites).toEqual([expect.objectContaining({
       title: "due tomorrow report", dueDate: null,
     })]);
     expect(result.outbound.at(-1)).toContain(
@@ -544,20 +552,20 @@ describe("Telegram Channel", () => {
     );
   });
 
-  it("supersedes a pending Event Proposal before starting a time correction turn", async () => {
+  it("supersedes a pending Prepared Event before starting a time correction turn", async () => {
     const result = await deliverWithSessionState(
       true, true, "create_calendar_event", vi.fn(async () => true), update(42, "Wait, make that 1pm"),
     );
 
     expect(result.inputResponses).toEqual([{ optionId: "deny", requestId: "approval" }]);
     expect(result.model).toHaveBeenCalledWith("Wait, make that 1pm");
-    expect(result.replacementProposals).toEqual([expect.objectContaining({
+    expect(result.replacementPreparedWrites).toEqual([expect.objectContaining({
       startLocal: "2026-08-03T13:00",
     })]);
     expect(result.outbound.at(-1)).toContain("2026-08-03T13:00–2026-08-03T13:30");
   });
 
-  it("finds the current Proposal from a bounded tail after historical waiting events", async () => {
+  it("finds the current Prepared Write from a bounded tail after historical waiting events", async () => {
     const result = await deliverWithActiveSession(
       true,
       update(42, "What is the weather?"),
@@ -565,14 +573,14 @@ describe("Telegram Channel", () => {
     );
     expect(result.model).not.toHaveBeenCalled();
     expect(result.outbound).toEqual([
-      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
-      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+      "Please approve or deny the pending Approval Request before starting another request. You can also use /reset.",
+      "Please approve or deny the pending Approval Request before starting another request. You can also use /reset.",
     ]);
     expect(result.inputResponses).toEqual([]);
     expect(result.eventStreamStartIndexes).toEqual([-3, -3]);
   });
 
-  it("does not label an ordinary active turn as a pending Proposal", async () => {
+  it("does not label an ordinary active turn as a pending Prepared Write", async () => {
     const result = await deliverWithSessionState(
       true, false, "create_calendar_event", vi.fn(async () => false), update(42, "One more detail"),
     );
@@ -588,17 +596,17 @@ describe("Telegram Channel", () => {
     expect(result.outbound).toEqual(["Model: Thanks"]);
   });
 
-  it("refuses unrelated text while a Task Proposal is pending", async () => {
+  it("refuses unrelated text while a Prepared Task is pending", async () => {
     const result = await deliverWithSessionState(
       true, true, "create_task", vi.fn(async () => false), update(42, "What is the weather?"),
     );
     expect(result.model).not.toHaveBeenCalled();
     expect(result.outbound).toEqual([
-      "Please approve or deny the pending proposal before starting another request. You can also use /reset.",
+      "Please approve or deny the pending Approval Request before starting another request. You can also use /reset.",
     ]);
   });
 
-  it("allows a new request after a Task Proposal is denied or approved", async () => {
+  it("allows a new request after a Prepared Task is denied or approved", async () => {
     const result = await deliverWithSessionState(
       true, "resolved", "create_task", vi.fn(async () => false), update(42, "Thanks"),
     );

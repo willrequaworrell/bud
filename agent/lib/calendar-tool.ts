@@ -19,7 +19,7 @@ const calendarEventSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("all-day"), title: z.string(), source: z.string(),
     startDate: z.iso.date(), endDate: z.iso.date() }),
 ]);
-const proposalWarningSchema = z.discriminatedUnion("kind", [
+const preparedEventWarningSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("starts-in-past"), message: z.literal("Starts in the past") }),
   z.object({ kind: z.literal("overlap"), message: z.string(), conflict: calendarEventSchema }),
 ]);
@@ -55,20 +55,20 @@ const prepareEventSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-const proposalSchema = z.discriminatedUnion("kind", [
+const preparedEventSchema = z.discriminatedUnion("kind", [
   z.object({
-    kind: z.literal("timed"), proposalId: z.string().length(64), title: z.string(),
+    kind: z.literal("timed"), preparedWriteId: z.string().length(64), title: z.string(),
     startLocal: z.string(), endLocal: z.string(), timeZone: z.string(),
     conflictTimeZone: z.string(),
     location: z.string().nullable(), description: z.string().nullable(),
-    warnings: z.array(proposalWarningSchema), recurrence: recurrenceSchema.optional(),
+    warnings: z.array(preparedEventWarningSchema), recurrence: recurrenceSchema.optional(),
   }),
   z.object({
-    kind: z.literal("all-day"), proposalId: z.string().length(64), title: z.string(),
+    kind: z.literal("all-day"), preparedWriteId: z.string().length(64), title: z.string(),
     startDate: z.iso.date(), throughDate: z.iso.date(), timeZone: z.string(),
     conflictTimeZone: z.string(),
     location: z.string().nullable(), description: z.string().nullable(),
-    warnings: z.array(proposalWarningSchema), recurrence: recurrenceSchema.optional(),
+    warnings: z.array(preparedEventWarningSchema), recurrence: recurrenceSchema.optional(),
   }),
 ]);
 
@@ -81,7 +81,7 @@ export function createPrepareCalendarEventTool(options: {
 }) {
   const calendar = createCalendar(options.adapter, options.now ? { now: options.now } : {});
   return defineTool({
-    description: "Prepare one complete, immutable Calendar Event proposal, including warnings for named Events that overlap it. Recurrence supports only daily, weekly, or monthly frequency with a positive interval; weekly rules may select weekdays. Every recurrence must have an end date or occurrence count and is limited to one year and 100 occurrences. If a recurrence exceeds either limit, ask the Owner for a shorter end date or smaller occurrence count. Reject specialized rules and exceptions instead of approximating them. Accept natural language from the Owner, but normalize resolved timed values to YYYY-MM-DDTHH:mm 24-hour local wall-clock fields before calling. Ask one focused clarification only when title, date, time, all-day intent, timezone, or recurrence boundary is materially ambiguous. Never ask the Owner to format tool input. This tool never writes.",
+    description: "Prepare one complete, immutable Prepared Event, including warnings for named Events that overlap it. Recurrence supports only daily, weekly, or monthly frequency with a positive interval; weekly rules may select weekdays. Every recurrence must have an end date or occurrence count and is limited to one year and 100 occurrences. If a recurrence exceeds either limit, ask the Owner for a shorter end date or smaller occurrence count. Reject specialized rules and exceptions instead of approximating them. Accept natural language from the Owner, but normalize resolved timed values to YYYY-MM-DDTHH:mm 24-hour local wall-clock fields before calling. Ask one focused clarification only when title, date, time, all-day intent, timezone, or recurrence boundary is materially ambiguous. Never ask the Owner to format tool input. This tool never writes.",
     inputSchema: prepareEventSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
@@ -95,12 +95,12 @@ export function createCreateCalendarEventTool(options: {
 }) {
   const calendar = createCalendar(options.adapter, options.now ? { now: options.now } : {});
   return defineTool({
-    description: "Revalidate Calendar conflicts, then create exactly the previously prepared one-off or bounded recurring Calendar Event on the configured Write Calendar. If conflicts changed, prepare a fresh Proposal and request approval again. Pass the complete Proposal verbatim and never alter its fields. Every call requires Owner approval.",
-    inputSchema: z.object({ proposal: proposalSchema }),
+    description: "Revalidate Calendar conflicts, then create exactly the previously prepared one-off or bounded recurring Prepared Event on the configured Write Calendar. If conflicts changed, prepare a fresh Prepared Event and create a new Approval Request. Pass the complete Prepared Event verbatim and never alter its fields. Every call creates an Approval Request.",
+    inputSchema: z.object({ preparedEvent: preparedEventSchema }),
     approval: always(),
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
-      return calendar.createEvent(input.proposal, ctx.callId);
+      return calendar.createEvent(input.preparedEvent, ctx.callId);
     },
   });
 }

@@ -8,7 +8,7 @@ export type CalendarEvent =
   | { kind: "all-day"; endDate: string; source: string; startDate: string; title: string }
   | { kind: "timed"; end: string; source: string; start: string; title: string };
 
-type EventProposalWarning =
+type PreparedEventWarning =
   | { kind: "starts-in-past"; message: "Starts in the past" }
   | { conflict: CalendarEvent; kind: "overlap"; message: string };
 
@@ -20,7 +20,7 @@ export type EventRecurrence = {
   end: { kind: "count"; count: number } | { kind: "until"; date: string };
 };
 
-type EventProposalDetails =
+type PreparedEventDetails =
   | {
       conflictTimeZone: string;
       description: string | null;
@@ -31,7 +31,7 @@ type EventProposalDetails =
       startLocal: string;
       timeZone: string;
       title: string;
-      warnings: EventProposalWarning[];
+      warnings: PreparedEventWarning[];
     }
   | {
       conflictTimeZone: string;
@@ -43,14 +43,14 @@ type EventProposalDetails =
       throughDate: string;
       timeZone: string;
       title: string;
-      warnings: EventProposalWarning[];
+      warnings: PreparedEventWarning[];
     };
 
-export type EventProposal = EventProposalDetails & { proposalId: string };
+export type PreparedEvent = PreparedEventDetails & { preparedWriteId: string };
 
 export type CalendarEventWrite = (
-  | Omit<Extract<EventProposalDetails, { kind: "timed" }>, "warnings" | "conflictTimeZone">
-  | Omit<Extract<EventProposalDetails, { kind: "all-day" }>, "warnings" | "conflictTimeZone">
+  | Omit<Extract<PreparedEventDetails, { kind: "timed" }>, "warnings" | "conflictTimeZone">
+  | Omit<Extract<PreparedEventDetails, { kind: "all-day" }>, "warnings" | "conflictTimeZone">
 ) & { idempotencyKey: string };
 
 export interface CalendarAdapter {
@@ -261,8 +261,8 @@ function canonicalValue(value: unknown): unknown {
   return value;
 }
 
-function proposalIdentity(proposal: EventProposalDetails): string {
-  return createHash("sha256").update(JSON.stringify(canonicalValue(proposal))).digest("hex");
+function preparedWriteIdentity(preparedEvent: PreparedEventDetails): string {
+  return createHash("sha256").update(JSON.stringify(canonicalValue(preparedEvent))).digest("hex");
 }
 
 function zonedMidnight(target: LocalDate, timeZone: string): Date {
@@ -312,16 +312,16 @@ interface EventInterval {
   start: Date;
 }
 
-function proposalInterval(proposal: EventProposalDetails): EventInterval {
-  if (proposal.kind === "timed") {
+function preparedEventInterval(preparedEvent: PreparedEventDetails): EventInterval {
+  if (preparedEvent.kind === "timed") {
     return {
-      start: localDateTimeInstant(proposal.startLocal, proposal.timeZone) as Date,
-      end: localDateTimeInstant(proposal.endLocal, proposal.timeZone) as Date,
+      start: localDateTimeInstant(preparedEvent.startLocal, preparedEvent.timeZone) as Date,
+      end: localDateTimeInstant(preparedEvent.endLocal, preparedEvent.timeZone) as Date,
     };
   }
   return {
-    start: zonedMidnight(parseDate(proposal.startDate)!, proposal.conflictTimeZone),
-    end: zonedMidnight(addDays(parseDate(proposal.throughDate)!, 1), proposal.conflictTimeZone),
+    start: zonedMidnight(parseDate(preparedEvent.startDate)!, preparedEvent.conflictTimeZone),
+    end: zonedMidnight(addDays(parseDate(preparedEvent.throughDate)!, 1), preparedEvent.conflictTimeZone),
   };
 }
 
@@ -342,7 +342,7 @@ function conflictWarnings(
   events: readonly CalendarEvent[],
   interval: EventInterval,
   timeZone: string,
-): EventProposalWarning[] {
+): PreparedEventWarning[] {
   return events.flatMap((event) => {
     const existing = calendarEventInterval(event, timeZone);
     if (!existing || interval.start >= existing.end || interval.end <= existing.start) return [];
@@ -371,14 +371,14 @@ export function createCalendar(
   const maxRecurrenceDays = options.maxRecurrenceDays ?? 365;
   const maxRecurrenceOccurrences = options.maxRecurrenceOccurrences ?? 100;
 
-  async function readConflictWarnings(proposal: EventProposalDetails) {
-    const interval = proposalInterval(proposal);
+  async function readConflictWarnings(preparedEvent: PreparedEventDetails) {
+    const interval = preparedEventInterval(preparedEvent);
     const events = await adapter.listEvents({
       start: interval.start.toISOString(),
       end: interval.end.toISOString(),
-      timeZone: proposal.conflictTimeZone,
+      timeZone: preparedEvent.conflictTimeZone,
     });
-    return conflictWarnings(events, interval, proposal.conflictTimeZone);
+    return conflictWarnings(events, interval, preparedEvent.conflictTimeZone);
   }
 
   return {
@@ -415,7 +415,7 @@ export function createCalendar(
         return { status: "error" as const, reason: recurrenceFailure,
           maxOccurrences: maxRecurrenceOccurrences, maxDurationDays: maxRecurrenceDays };
       }
-      let proposal: EventProposalDetails;
+      let preparedEvent: PreparedEventDetails;
       if (request.kind === "timed") {
         const endLocal = request.endLocal ?? addMinutes(request.startLocal, 30);
         if (!endLocal) return { status: "error" as const, reason: "invalid_time" as const };
@@ -425,7 +425,7 @@ export function createCalendar(
           return { status: "error" as const, reason: "ambiguous_time" as const };
         }
         if (!start || !end || end <= start) return { status: "error" as const, reason: "invalid_time" as const };
-        proposal = { ...common, kind: "timed", startLocal: request.startLocal, endLocal,
+        preparedEvent = { ...common, kind: "timed", startLocal: request.startLocal, endLocal,
           warnings: start < now() ? [{ kind: "starts-in-past", message: "Starts in the past" }] : [] };
       } else {
         const start = parseDate(request.startDate);
@@ -433,23 +433,26 @@ export function createCalendar(
         if (!start || !through || inclusiveDays(start, through) < 1) {
           return { status: "error" as const, reason: "invalid_date" as const };
         }
-        proposal = { ...common, kind: "all-day", startDate: request.startDate,
+        preparedEvent = { ...common, kind: "all-day", startDate: request.startDate,
           throughDate: request.throughDate ?? request.startDate,
           warnings: zonedMidnight(start, timeZone) < now()
             ? [{ kind: "starts-in-past", message: "Starts in the past" }] : [] };
       }
       try {
-        proposal.warnings.push(...await readConflictWarnings(proposal));
+        preparedEvent.warnings.push(...await readConflictWarnings(preparedEvent));
       } catch (error) {
         return { status: "error" as const, reason: failureReason(error) };
       }
-      return { status: "ok" as const, proposal: { ...proposal, proposalId: proposalIdentity(proposal) } as EventProposal };
+      return { status: "ok" as const, preparedEvent: {
+        ...preparedEvent,
+        preparedWriteId: preparedWriteIdentity(preparedEvent),
+      } as PreparedEvent };
     },
-    async createEvent(proposal: EventProposal, idempotencyKey: string) {
-      const { proposalId, warnings, conflictTimeZone, ...event } = proposal;
-      const approved = { ...event, warnings, conflictTimeZone } as EventProposalDetails;
-      if (proposalIdentity(approved) !== proposalId) {
-        return { status: "error" as const, reason: "proposal_changed" as const };
+    async createEvent(preparedEvent: PreparedEvent, idempotencyKey: string) {
+      const { preparedWriteId, warnings, conflictTimeZone, ...event } = preparedEvent;
+      const exactPreparedEvent = { ...event, warnings, conflictTimeZone } as PreparedEventDetails;
+      if (preparedWriteIdentity(exactPreparedEvent) !== preparedWriteId) {
+        return { status: "error" as const, reason: "prepared_write_changed" as const };
       }
       if (!adapter.createEvent) {
         return { status: "error" as const, reason: "unavailable" as const };
@@ -460,7 +463,7 @@ export function createCalendar(
           return { status: "error" as const, reason: "conflicts_changed" as const };
         }
         const priorConflicts = warnings.filter((warning) => warning.kind === "overlap");
-        const currentConflicts = await readConflictWarnings(approved);
+        const currentConflicts = await readConflictWarnings(exactPreparedEvent);
         if (JSON.stringify(canonicalValue(currentConflicts)) !==
             JSON.stringify(canonicalValue(priorConflicts))) {
           return { status: "error" as const, reason: "conflicts_changed" as const };

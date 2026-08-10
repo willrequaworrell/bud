@@ -3,7 +3,7 @@ import { always } from "eve/tools/approval";
 import { z } from "zod";
 
 import {
-  createTasks, groupTasks, isTaskProposalUnchanged, TasksAdapterError, type TasksAdapter,
+  createTasks, groupTasks, isPreparedTaskUnchanged, TasksAdapterError, type TasksAdapter,
 } from "./tasks.js";
 
 const basicTaskSchema = z.object({
@@ -33,10 +33,10 @@ const notedTaskSchema = z.object({
   ),
 });
 
-const taskProposalSchema = z.object({
+const preparedTaskSchema = z.object({
   title: z.string(), notes: z.string().nullable(), dueDate: z.iso.date().nullable(),
-  proposalId: z.string().length(64),
-}).refine(isTaskProposalUnchanged, { message: "Task Proposal fields changed after preparation" });
+  preparedWriteId: z.string().length(64),
+}).refine(isPreparedTaskUnchanged, { message: "Prepared Task fields changed after preparation" });
 
 function isOwner(ctx: ToolContext, ownerId: string) {
   return ctx.session.auth.current?.principalId === `telegram:${ownerId}`;
@@ -45,7 +45,7 @@ function isOwner(ctx: ToolContext, ownerId: string) {
 export function createPrepareTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Default Task preparation capability. Prepare one complete immutable Task Proposal containing only the required title. The resulting Task is always undated and has no notes. Use this capability unless the Owner explicitly supplies a due date or meaningful notes. Do not ask for a different title merely because date-like words can be part of the literal title. Punctuation and quotation marks around the title are never notes. This tool never writes.",
+    description: "Default Task preparation capability. Prepare one complete immutable Prepared Task containing only the required title. The resulting Task is always undated and has no notes. Use this capability unless the Owner explicitly supplies a due date or meaningful notes. Do not ask for a different title merely because date-like words can be part of the literal title. Punctuation and quotation marks around the title are never notes. This tool never writes.",
     inputSchema: basicTaskSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
@@ -57,7 +57,7 @@ export function createPrepareTaskTool(options: { adapter: TasksAdapter; ownerId:
 export function createPrepareDatedTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Date-only Task preparation capability. Use when the Owner explicitly supplies a due date and does not ask to add a note. Resolve an explicitly supplied relative date such as tomorrow into dueDate. Remove only that separate date instruction from the title; date-like words can be part of the literal title. This tool structurally cannot add notes. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
+    description: "Date-only Task preparation capability. Use when the Owner explicitly supplies a due date and does not ask to add a note. Resolve an explicitly supplied relative date such as tomorrow into dueDate. Remove only that separate date instruction from the title; date-like words can be part of the literal title. This tool structurally cannot add notes. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Prepared Event instead. This tool never writes.",
     inputSchema: datedTaskSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
@@ -69,7 +69,7 @@ export function createPrepareDatedTaskTool(options: { adapter: TasksAdapter; own
 export function createPrepareNotedTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Explicit-note Task preparation capability. Use only when the Owner naturally and explicitly asks to add meaningful note content. Copy only that requested content into notes. The title, separate due-date instruction, quotation marks, punctuation, and conversational filler are never notes; date-like words can be part of the literal title. Include dueDate only when the Owner also explicitly supplies one, resolving relative dates such as tomorrow to YYYY-MM-DD. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Calendar Event Proposal instead. This tool never writes.",
+    description: "Explicit-note Task preparation capability. Use only when the Owner naturally and explicitly asks to add meaningful note content. Copy only that requested content into notes. The title, separate due-date instruction, quotation marks, punctuation, and conversational filler are never notes; date-like words can be part of the literal title. Include dueDate only when the Owner also explicitly supplies one, resolving relative dates such as tomorrow to YYYY-MM-DD. If the Owner specifies a time, do not call this tool: explain that Google Tasks cannot retain a time and offer a Prepared Event instead. This tool never writes.",
     inputSchema: notedTaskSchema,
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
@@ -81,12 +81,12 @@ export function createPrepareNotedTaskTool(options: { adapter: TasksAdapter; own
 export function createCreateTaskTool(options: { adapter: TasksAdapter; ownerId: string }) {
   const tasks = createTasks(options.adapter);
   return defineTool({
-    description: "Create exactly one previously prepared Task. Pass the complete Proposal returned by the selected Task preparation tool through verbatim; never reconstruct, summarize, fill defaults, or alter any field. Every call requires Owner approval.",
-    inputSchema: z.object({ proposal: taskProposalSchema }),
+    description: "Create exactly one previously prepared Task. Pass the complete Prepared Task returned by the selected preparation tool through verbatim; never reconstruct, summarize, fill defaults, or alter any field. Every call creates an Approval Request.",
+    inputSchema: z.object({ preparedTask: preparedTaskSchema }),
     approval: always(),
     async execute(input, ctx: ToolContext) {
       if (!isOwner(ctx, options.ownerId)) return { status: "error" as const, reason: "forbidden" as const };
-      return tasks.createTask(input.proposal, ctx.callId);
+      return tasks.createTask(input.preparedTask, ctx.callId);
     },
   });
 }

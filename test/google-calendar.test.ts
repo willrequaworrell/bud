@@ -23,7 +23,9 @@ it("creates an all-day Event on only the configured Write Calendar", async () =>
     summary: "Beach trip", location: "Cape May",
     start: { date: "2026-08-07" }, end: { date: "2026-08-10" },
     reminders: { useDefault: true },
-    extendedProperties: { private: { budProposalHash: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+    extendedProperties: { private: {
+      budPreparedWriteHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    } },
   });
 });
 
@@ -127,6 +129,28 @@ it("treats a retried identical Google Event insert as success", async () => {
     recurrence: { frequency: "daily", interval: 1, end: { kind: "count", count: 5 } },
   })).resolves.toEqual({ eventId: expect.stringMatching(/^bud/) });
   expect(googleFetch).toHaveBeenCalledTimes(2);
+});
+
+it("recovers an exact Event written before the provider metadata cutover", async () => {
+  let insertedBody: Record<string, unknown> | undefined;
+  const googleFetch = vi.fn<typeof fetch>(async (_input, init) => {
+    if (init?.method === "POST") {
+      insertedBody = JSON.parse(String(init.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify({ error: { code: 409 } }), { status: 409 });
+    }
+    const { extendedProperties: _metadata, ...exactExistingEvent } = insertedBody!;
+    return Response.json(exactExistingEvent);
+  });
+  const adapter = createGoogleCalendarAdapter({
+    writeCalendarId: "write", readCalendarIds: ["write"], fetch: googleFetch,
+    tokenProvider: { async getAccessToken() { return "token"; } },
+  });
+
+  await expect(adapter.createEvent!({
+    kind: "timed", title: "Dentist", startLocal: "2026-08-03T09:00",
+    endLocal: "2026-08-03T09:30", timeZone: "America/New_York",
+    location: null, description: null, idempotencyKey: "pre-cutover-call",
+  })).resolves.toEqual({ eventId: expect.stringMatching(/^bud/) });
 });
 
 it("recovers when a temporary Google error hides a successful recurring Event insert", async () => {

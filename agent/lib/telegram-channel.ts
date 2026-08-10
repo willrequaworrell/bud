@@ -11,14 +11,15 @@ import {
 import type { RouteHandlerArgs, Session } from "eve/channels";
 
 import type { BudConfig } from "./config.js";
+import { parseApprovalRequest, renderApprovalRequest } from "./approval-request.js";
 import { isOwnerPrivateText } from "./telegram-policy.js";
 import { preprocessTelegramMedia, type TelegramMediaDependencies } from "./telegram-media.js";
-import type { ProposalCorrectionClassifier } from "./proposal-correction.js";
+import type { PreparedWriteCorrectionClassifier } from "./prepared-write-correction.js";
 
 const RESET_REQUEST_PREFIX = "bud:conversation-reset:";
-const REFUSED_REQUEST_PREFIX = "bud:pending-proposal-refused:";
-const PENDING_PROPOSAL_MESSAGE =
-  "Please approve or deny the pending proposal before starting another request. You can also use /reset.";
+const REFUSED_REQUEST_PREFIX = "bud:pending-approval-request-refused:";
+const PENDING_APPROVAL_REQUEST_MESSAGE =
+  "Please approve or deny the pending Approval Request before starting another request. You can also use /reset.";
 const PARKED_SESSION_TAIL_SIZE = 3;
 
 interface ResettableTelegramChannel {
@@ -49,7 +50,7 @@ interface ResetPayload {
 }
 
 interface TelegramChannelDependencies extends TelegramMediaDependencies {
-  correctionClassifier?: ProposalCorrectionClassifier;
+  correctionClassifier?: PreparedWriteCorrectionClassifier;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -62,82 +63,6 @@ async function isTelegramFreeTextRequest(request: Request): Promise<boolean> {
   const update = record(await request.clone().json().catch(() => undefined));
   const message = record(update?.message);
   return typeof message?.text === "string" && message.text.trim().length > 0;
-}
-
-function eventProposalApprovalPrompt(input: unknown): string | undefined {
-  const proposal = record(record(input)?.proposal);
-  if (!proposal || typeof proposal.title !== "string" ||
-      typeof proposal.kind !== "string" || typeof proposal.timeZone !== "string") return undefined;
-
-  let when: string;
-  if (proposal.kind === "timed" && typeof proposal.startLocal === "string" &&
-      typeof proposal.endLocal === "string") {
-    when = `${proposal.startLocal}–${proposal.endLocal} (${proposal.timeZone})`;
-  } else if (proposal.kind === "all-day" && typeof proposal.startDate === "string" &&
-      typeof proposal.throughDate === "string") {
-    when = proposal.startDate === proposal.throughDate
-      ? `${proposal.startDate} (all day; ${proposal.timeZone})`
-      : `${proposal.startDate}–${proposal.throughDate} (all day; ${proposal.timeZone})`;
-  } else {
-    return undefined;
-  }
-
-  const details = [proposal.title, `When: ${when}`];
-  const recurrence = record(proposal.recurrence);
-  const recurrenceEnd = record(recurrence?.end);
-  if (recurrence && recurrenceEnd && typeof recurrence.frequency === "string" &&
-      typeof recurrence.interval === "number") {
-    const weekdays = Array.isArray(recurrence.weekdays)
-      ? recurrence.weekdays.filter((day): day is string => typeof day === "string") : [];
-    const weekdayNames: Record<string, string> = {
-      MO: "Monday", TU: "Tuesday", WE: "Wednesday", TH: "Thursday",
-      FR: "Friday", SA: "Saturday", SU: "Sunday",
-    };
-    const cadence = recurrence.interval === 1
-      ? `Every ${{ daily: "day", weekly: "week", monthly: "month" }[recurrence.frequency] ?? recurrence.frequency}`
-      : `Every ${recurrence.interval} ${recurrence.frequency === "daily" ? "days" :
-          recurrence.frequency === "weekly" ? "weeks" : "months"}`;
-    const onDays = weekdays.length
-      ? ` on ${weekdays.map((day) => weekdayNames[day] ?? day).join(weekdays.length === 2 ? " and " : ", ")}`
-      : "";
-    const boundary = recurrenceEnd.kind === "count" && typeof recurrenceEnd.count === "number"
-      ? `${recurrenceEnd.count} occurrences`
-      : recurrenceEnd.kind === "until" && typeof recurrenceEnd.date === "string"
-        ? `through ${recurrenceEnd.date}` : undefined;
-    if (boundary) details.push(`Repeats: ${cadence}${onDays}; ${boundary}`);
-  }
-  if (typeof proposal.location === "string") details.push(`Location: ${proposal.location}`);
-  if (typeof proposal.description === "string") details.push(`Description: ${proposal.description}`);
-  const warnings = Array.isArray(proposal.warnings)
-    ? proposal.warnings.flatMap((warning) => {
-        const message = record(warning)?.message;
-        return typeof message === "string" ? [`Warning: ${message}`] : [];
-      })
-    : [];
-  return ["Create Calendar Event?", "", ...details, ...(warnings.length ? ["", ...warnings] : [])]
-    .join("\n");
-}
-
-function taskProposalApprovalPrompt(input: unknown): string | undefined {
-  const proposal = record(record(input)?.proposal);
-  if (!proposal || typeof proposal.title !== "string" ||
-      !(proposal.dueDate === null || typeof proposal.dueDate === "string") ||
-      !(proposal.notes === null || typeof proposal.notes === "string")) return undefined;
-  return [
-    "Create Task?", "", proposal.title,
-    `Due: ${proposal.dueDate ?? "No due date"}`,
-    ...(proposal.notes ? [`Notes: ${proposal.notes}`] : []),
-  ].join("\n");
-}
-
-function proposalApprovalPrompt(toolName: string, input: unknown) {
-  if (toolName.endsWith("create_calendar_event")) return eventProposalApprovalPrompt(input);
-  if (toolName.endsWith("create_task")) return taskProposalApprovalPrompt(input);
-  return undefined;
-}
-
-function isProposalCreationTool(toolName: string) {
-  return toolName.endsWith("create_calendar_event") || toolName.endsWith("create_task");
 }
 
 function approvalPromptChunks(prompt: string): string[] {
@@ -153,7 +78,10 @@ export const handleTelegramInputRequested: NonNullable<
   TelegramChannelEvents["input.requested"]
 > = async (data, channel) => {
   for (const request of data.requests) {
-    const prompt = proposalApprovalPrompt(request.action.toolName, request.action.input);
+    const prompt = renderApprovalRequest({
+      input: request.action.input,
+      toolName: request.action.toolName,
+    });
     const chunks = prompt ? approvalPromptChunks(prompt) : [request.prompt];
     for (const chunk of chunks.slice(0, -1)) {
       await channel.telegram.post({ text: chunk });
@@ -188,46 +116,47 @@ function completedSyntheticSession(requestId: string): Session {
   };
 }
 
-interface PendingProposal {
-  proposal: Record<string, unknown>;
-  proposalType: "event" | "task";
+interface PendingApprovalRequest {
+  preparedWrite: Record<string, unknown>;
+  preparedWriteType: "event" | "task";
   requestId: string;
 }
 
-async function pendingProposal(
+async function pendingApprovalRequest(
   args: RouteHandlerArgs<TelegramChannelState>,
   sessionId: string,
-): Promise<PendingProposal | undefined> {
+): Promise<PendingApprovalRequest | undefined> {
   const stream = await args.getSession(sessionId).getEventStream({
     startIndex: -PARKED_SESSION_TAIL_SIZE,
   });
   const reader = stream.getReader();
   const pendingCallIds = new Set<string>();
-  const proposalsByCallId = new Map<string, PendingProposal>();
+  const approvalRequestsByCallId = new Map<string, PendingApprovalRequest>();
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) return undefined;
       if (value.type === "input.requested") {
         for (const request of value.data.requests) {
-          if (isProposalCreationTool(request.action.toolName)) {
+          const approvalRequest = parseApprovalRequest({
+            input: request.action.input,
+            toolName: request.action.toolName,
+          });
+          if (approvalRequest) {
             pendingCallIds.add(request.action.callId);
-            const proposal = record(record(request.action.input)?.proposal);
-            if (proposal) {
-              proposalsByCallId.set(request.action.callId, {
-                proposal,
-                proposalType: request.action.toolName.endsWith("create_task") ? "task" : "event",
-                requestId: request.requestId,
-              });
-            }
+            approvalRequestsByCallId.set(request.action.callId, {
+              preparedWrite: approvalRequest.preparedWrite,
+              preparedWriteType: approvalRequest.preparedWriteType,
+              requestId: request.requestId,
+            });
           }
         }
       } else if (value.type === "action.result") {
         pendingCallIds.delete(value.data.result.callId);
-        proposalsByCallId.delete(value.data.result.callId);
+        approvalRequestsByCallId.delete(value.data.result.callId);
       } else if (value.type === "session.waiting") {
         const pendingCallId = pendingCallIds.values().next().value;
-        return pendingCallId ? proposalsByCallId.get(pendingCallId) : undefined;
+        return pendingCallId ? approvalRequestsByCallId.get(pendingCallId) : undefined;
       }
     }
   } finally {
@@ -323,13 +252,16 @@ export function createBudTelegramChannel(
           const active = await args.resolveActiveSession({
             continuationToken: options.continuationToken,
           });
-          const pending = active ? await pendingProposal(args, active.sessionId) : undefined;
+          const pending = active ? await pendingApprovalRequest(args, active.sessionId) : undefined;
           if (!pending) {
             return args.send(input, options);
           }
           const isCorrection = correctionClassifier && isFreeText
-            ? await correctionClassifier({ message, proposal: pending.proposal,
-              proposalType: pending.proposalType }).catch(() => false)
+            ? await correctionClassifier({
+                message,
+                preparedWrite: pending.preparedWrite,
+                preparedWriteType: pending.preparedWriteType,
+              }).catch(() => false)
             : false;
           if (isCorrection) {
             await args.send(
@@ -340,7 +272,7 @@ export function createBudTelegramChannel(
           }
           await sendTelegramMessage({
             ...(telegramFetch ? { fetch: telegramFetch } : {}),
-            body: { text: PENDING_PROPOSAL_MESSAGE },
+            body: { text: PENDING_APPROVAL_REQUEST_MESSAGE },
             chatId: options.state.chatId!,
             credentials: { botToken: channelConfig.telegramBotToken },
           });

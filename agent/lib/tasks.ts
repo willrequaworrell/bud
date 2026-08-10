@@ -31,20 +31,20 @@ export interface TaskWrite {
   title: string;
 }
 
-export interface TaskProposal {
+export interface PreparedTask {
   dueDate: string | null;
   notes: string | null;
-  proposalId: string;
+  preparedWriteId: string;
   title: string;
 }
 
-function proposalIdentity(proposal: Omit<TaskProposal, "proposalId">): string {
-  return createHash("sha256").update(JSON.stringify(proposal)).digest("hex");
+function preparedWriteIdentity(preparedTask: Omit<PreparedTask, "preparedWriteId">): string {
+  return createHash("sha256").update(JSON.stringify(preparedTask)).digest("hex");
 }
 
-export function isTaskProposalUnchanged(proposal: TaskProposal): boolean {
-  const { proposalId, ...details } = proposal;
-  return proposalIdentity(details) === proposalId;
+export function isPreparedTaskUnchanged(preparedTask: PreparedTask): boolean {
+  const { preparedWriteId, ...details } = preparedTask;
+  return preparedWriteIdentity(details) === preparedWriteId;
 }
 
 function validDate(value: string): boolean {
@@ -74,15 +74,15 @@ export function createTasks(adapter: TasksAdapter) {
         notes: input.notes?.trim() || null,
         dueDate: input.dueDate ?? null,
       };
-      return { status: "ok" as const, proposal: {
-        ...details, proposalId: proposalIdentity(details),
+      return { status: "ok" as const, preparedTask: {
+        ...details, preparedWriteId: preparedWriteIdentity(details),
       } };
     },
-    async createTask(proposal: TaskProposal, idempotencyKey: string) {
-      if (!isTaskProposalUnchanged(proposal)) {
-        return { status: "error" as const, reason: "proposal_changed" as const };
+    async createTask(preparedTask: PreparedTask, idempotencyKey: string) {
+      if (!isPreparedTaskUnchanged(preparedTask)) {
+        return { status: "error" as const, reason: "prepared_write_changed" as const };
       }
-      const { proposalId: _proposalId, ...task } = proposal;
+      const { preparedWriteId: _preparedWriteId, ...task } = preparedTask;
       if (!adapter.createTask) return { status: "error" as const, reason: "unavailable" as const };
       try {
         const created = await adapter.createTask({ ...task, idempotencyKey });

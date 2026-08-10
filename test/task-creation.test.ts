@@ -18,7 +18,7 @@ function adapter(createTask = vi.fn(async () => ({ taskId: "task-1" }))): TasksA
   return { createTask, async listIncomplete() { return { tasks: [], truncated: false }; } };
 }
 
-it("prepares immutable title-only, dated, and noted Task Proposals", async () => {
+it("prepares immutable title-only, dated, and noted Prepared Tasks", async () => {
   const options = { adapter: adapter(), ownerId: "42" };
   const prepared = await Promise.all([
     createPrepareTaskTool(options).execute({ title: "Buy milk" }, context()),
@@ -31,12 +31,12 @@ it("prepares immutable title-only, dated, and noted Task Proposals", async () =>
   ]);
 
   expect(prepared).toEqual([
-    { status: "ok", proposal: { title: "Buy milk", dueDate: null, notes: null,
-      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
-    { status: "ok", proposal: { title: "Submit report", dueDate: "2026-08-05", notes: null,
-      proposalId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
-    { status: "ok", proposal: { title: "Submit report", dueDate: "2026-08-05",
-      notes: "Needs manager approval", proposalId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+    { status: "ok", preparedTask: { title: "Buy milk", dueDate: null, notes: null,
+      preparedWriteId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+    { status: "ok", preparedTask: { title: "Submit report", dueDate: "2026-08-05", notes: null,
+      preparedWriteId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
+    { status: "ok", preparedTask: { title: "Submit report", dueDate: "2026-08-05",
+      notes: "Needs manager approval", preparedWriteId: expect.stringMatching(/^[a-f0-9]{64}$/) } },
   ]);
 });
 
@@ -50,12 +50,12 @@ it("structurally prevents title-only and dated Task tools from accepting notes",
   }).parse({ title: "Submit report", dueDate: "2026-08-05", notes: "due tomorrow" });
 
   expect(await basic.execute(basicInput, context())).toEqual({
-    status: "ok", proposal: { title: "Buy milk", dueDate: null, notes: null,
-      proposalId: expect.any(String) },
+    status: "ok", preparedTask: { title: "Buy milk", dueDate: null, notes: null,
+      preparedWriteId: expect.any(String) },
   });
   expect(await dated.execute(datedInput, context())).toEqual({
-    status: "ok", proposal: { title: "Submit report", dueDate: "2026-08-05", notes: null,
-      proposalId: expect.any(String) },
+    status: "ok", preparedTask: { title: "Submit report", dueDate: "2026-08-05", notes: null,
+      preparedWriteId: expect.any(String) },
   });
 });
 
@@ -73,8 +73,8 @@ it("accepts date-like words when they are the literal Task title", async () => {
 
   await expect(tool.execute({ title: "\"due tomorrow report\"" }, context()))
     .resolves.toEqual({
-      status: "ok", proposal: { title: "due tomorrow report", dueDate: null, notes: null,
-        proposalId: expect.any(String) },
+      status: "ok", preparedTask: { title: "due tomorrow report", dueDate: null, notes: null,
+        preparedWriteId: expect.any(String) },
     });
   expect(tool.description).toContain("Do not ask for a different title merely because");
 });
@@ -135,62 +135,63 @@ it.each([
   });
 
   expect(generated.toolCalls[0]?.toolName).toBe(selectedTool);
-  expect((generated.toolResults[0]?.output as { proposal: { notes: string | null } })
-    .proposal.notes).toBe(expectedNotes);
+  expect((generated.toolResults[0]?.output as { preparedTask: { notes: string | null } })
+    .preparedTask.notes).toBe(expectedNotes);
 });
 
-it("changes Proposal identity when any displayed Task detail changes", async () => {
+it("changes Prepared Write identity when any displayed Task detail changes", async () => {
   const basic = createPrepareTaskTool({ adapter: adapter(), ownerId: "42" });
   const noted = createPrepareNotedTaskTool({ adapter: adapter(), ownerId: "42" });
   const original = await basic.execute({ title: "Buy milk" }, context());
   const revised = await noted.execute({ title: "Buy milk", notes: "Organic" }, context());
-  if (original.status !== "ok" || revised.status !== "ok") throw new Error("expected proposals");
-  expect(revised.proposal.proposalId).not.toBe(original.proposal.proposalId);
+  if (original.status !== "ok" || revised.status !== "ok") throw new Error("expected Prepared Tasks");
+  expect(revised.preparedTask.preparedWriteId).not.toBe(original.preparedTask.preparedWriteId);
 });
 
-it("rejects a reconstructed Proposal before displaying an approval", async () => {
+it("rejects a reconstructed Prepared Task before displaying an Approval Request", async () => {
   const tasks = adapter();
   const prepare = createPrepareTaskTool({ adapter: tasks, ownerId: "42" });
   const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
   const prepared = await prepare.execute({ title: "Fit mouthguard" }, context());
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Task");
   const schema = create.inputSchema as unknown as {
     safeParse(input: unknown): { success: boolean };
   };
 
-  expect(schema.safeParse({ proposal: {
-    ...prepared.proposal, dueDate: "2026-08-03", notes: ".",
+  expect(schema.safeParse({ preparedTask: {
+    ...prepared.preparedTask, dueDate: "2026-08-03", notes: ".",
   } }).success).toBe(false);
 });
 
-it("creates exactly the approved Task only through per-call approval", async () => {
+it("creates exactly the Prepared Task only through a per-call Approval Request", async () => {
   const createTask = vi.fn(async () => ({ taskId: "task-1" }));
   const tasks = adapter(createTask);
   const prepare = createPrepareDatedTaskTool({ adapter: tasks, ownerId: "42" });
   const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
   const prepared = await prepare.execute({ title: "Buy milk", dueDate: "2026-08-03" }, context());
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Task");
 
   expect(await create.approval!({} as never)).toBe("user-approval");
   expect(createTask).not.toHaveBeenCalled();
-  expect(await create.execute({ proposal: prepared.proposal }, context()))
+  expect(await create.execute({ preparedTask: prepared.preparedTask }, context()))
     .toEqual({ status: "ok", taskId: "task-1" });
   expect(createTask).toHaveBeenCalledWith({
     title: "Buy milk", notes: null, dueDate: "2026-08-03", idempotencyKey: "call-123",
   });
 });
 
-it("rejects a changed or unauthorized Task Proposal without writing", async () => {
+it("rejects a changed or unauthorized Prepared Task without writing", async () => {
   const createTask = vi.fn(async () => ({ taskId: "task-1" }));
   const tasks = adapter(createTask);
   const prepare = createPrepareTaskTool({ adapter: tasks, ownerId: "42" });
   const create = createCreateTaskTool({ adapter: tasks, ownerId: "42" });
   const prepared = await prepare.execute({ title: "Buy milk" }, context());
-  if (prepared.status !== "ok") throw new Error("expected proposal");
+  if (prepared.status !== "ok") throw new Error("expected Prepared Task");
 
-  await expect(create.execute({ proposal: { ...prepared.proposal, title: "Changed" } }, context()))
-    .resolves.toEqual({ status: "error", reason: "proposal_changed" });
-  await expect(create.execute({ proposal: prepared.proposal }, context("telegram:99")))
+  await expect(create.execute({
+    preparedTask: { ...prepared.preparedTask, title: "Changed" },
+  }, context())).resolves.toEqual({ status: "error", reason: "prepared_write_changed" });
+  await expect(create.execute({ preparedTask: prepared.preparedTask }, context("telegram:99")))
     .resolves.toEqual({ status: "error", reason: "forbidden" });
   expect(createTask).not.toHaveBeenCalled();
 });
@@ -201,12 +202,12 @@ it.each(["", "   "])("requires a non-empty Task title", async (title) => {
     .resolves.toEqual({ status: "error", reason: "title_required" });
 });
 
-it("cannot silently coerce a time-specific request into a date-only Task Proposal", () => {
+it("cannot silently coerce a time-specific request into a date-only Prepared Task", () => {
   const tool = createPrepareDatedTaskTool({ adapter: adapter(), ownerId: "42" });
   const schema = tool.inputSchema as unknown as {
     safeParse(input: unknown): { success: boolean };
   };
   expect(schema.safeParse({ title: "Take medicine", dueDate: "2026-08-03T09:00" }).success)
     .toBe(false);
-  expect(tool.description).toContain("offer a Calendar Event Proposal instead");
+  expect(tool.description).toContain("offer a Prepared Event instead");
 });
