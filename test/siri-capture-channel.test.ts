@@ -1,8 +1,11 @@
 import type { RouteHandlerArgs } from "eve/channels";
+import type { ToolContext } from "eve/tools";
 import { describe, expect, it, vi } from "vitest";
 
 import type { BudConfig } from "../agent/lib/config.js";
+import { createFakeCreationGuard } from "../agent/lib/creation-guard.js";
 import { createSiriCaptureChannel } from "../agent/lib/siri-capture-channel.js";
+import { createCreateTaskTool, createPrepareTaskTool } from "../agent/lib/tasks-tool.js";
 
 type CaptureRouteArgs = RouteHandlerArgs<{} | undefined>;
 
@@ -154,5 +157,54 @@ describe("Siri capture HTTP channel", () => {
       target: { chatId: "42" },
     });
     expect(backgroundTasks).toHaveLength(1);
+  });
+
+  it("automatically creates one Prepared Task from an authenticated Siri request", async () => {
+    const createTask = vi.fn(async () => ({ taskId: "task-1" }));
+    const adapter = { createTask, async listIncomplete() { return { tasks: [], truncated: false }; } };
+    const prepare = createPrepareTaskTool({ adapter, ownerId: config.ownerId });
+    const create = createCreateTaskTool({
+      adapter, guard: createFakeCreationGuard(["automatic"]), ownerId: config.ownerId,
+    });
+    const telegram = {} as never;
+    const receive = vi.fn(async (_channel, input: {
+      auth: { principalId: string };
+      message: string;
+    }) => {
+      expect(input.message).toBe("Create task: Siri channel task");
+      const toolContext = {
+        callId: "siri-create-call", session: {
+          id: "siri-session", auth: { current: { principalId: input.auth.principalId } },
+          turn: { id: "siri-turn" },
+        },
+      } as ToolContext;
+      const prepared = await prepare.execute({ title: "Siri channel task" }, toolContext);
+      if (prepared.status !== "ok") throw new Error("expected Prepared Task");
+      await expect(create.approval!(toolContext as never)).resolves.toBe("not-applicable");
+      await expect(create.execute({ preparedTask: prepared.preparedTask }, toolContext))
+        .resolves.toEqual({ status: "ok", taskId: "task-1" });
+    });
+    const backgroundTasks: Promise<unknown>[] = [];
+    const channel = createSiriCaptureChannel(config, telegram);
+    const route = channel.routes[0]!;
+
+    const response = await route.handler(new Request("https://bud.test/eve/v1/siri", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${captureToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ message: "Create task: Siri channel task" }),
+    }), {
+      receive,
+      waitUntil(task: Promise<unknown>) { backgroundTasks.push(task); },
+    } as unknown as CaptureRouteArgs) as Response;
+    await Promise.all(backgroundTasks);
+
+    expect(response.status).toBe(202);
+    expect(receive).toHaveBeenCalledOnce();
+    expect(createTask).toHaveBeenCalledWith({
+      title: "Siri channel task", notes: null, dueDate: null, idempotencyKey: "siri-create-call",
+    });
   });
 });

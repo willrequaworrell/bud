@@ -7,7 +7,10 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
 import type { BudConfig } from "../agent/lib/config.js";
-import { createListIncompleteTasksTool } from "../agent/lib/tasks-tool.js";
+import { createFakeCreationGuard } from "../agent/lib/creation-guard.js";
+import {
+  createCreateTaskTool, createListIncompleteTasksTool, createPrepareTaskTool,
+} from "../agent/lib/tasks-tool.js";
 import { TasksAdapterError, type TasksAdapter } from "../agent/lib/tasks.js";
 import { createBudTelegramChannel } from "../agent/lib/telegram-channel.js";
 
@@ -99,6 +102,51 @@ async function askForTasks(adapter: TasksAdapter) {
   return outbound;
 }
 
+async function createOneAutomaticTask(
+  input: { message: string; principalId: string }, adapter: TasksAdapter,
+) {
+  const prepare = createPrepareTaskTool({ adapter, ownerId: config.ownerId });
+  const create = createCreateTaskTool({
+    adapter, guard: createFakeCreationGuard(["automatic"]), ownerId: config.ownerId,
+  });
+  const model = mockModel(({ toolResults }) => {
+    if (toolResults.length === 0) {
+      return { toolCalls: [{ input: { title: "Channel test task" }, name: "prepare_task" }] };
+    }
+    if (toolResults.length === 1) {
+      const preparedTask = (toolResults[0]!.output as { preparedTask: unknown }).preparedTask;
+      return { toolCalls: [{ input: { preparedTask }, name: "create_task" }] };
+    }
+    return "Created Channel test task.";
+  });
+  const toolContext = {
+    callId: "create-call", session: {
+      id: "session-1", auth: { current: { principalId: input.principalId } },
+      turn: { id: "turn-1" },
+    },
+  } as ToolContext;
+
+  return generateText({
+    model, prompt: input.message, stopWhen: stepCountIs(3),
+    tools: {
+      prepare_task: modelTool({
+        description: prepare.description,
+        inputSchema: z.object({ title: z.string() }),
+        execute: (value) => prepare.execute(value, toolContext),
+      }),
+      create_task: modelTool({
+        description: create.description,
+        inputSchema: create.inputSchema as z.ZodType,
+        async execute(value) {
+          const approval = await create.approval!(toolContext as never);
+          if (approval !== "not-applicable") throw new Error("expected automatic creation");
+          return create.execute(value as never, toolContext);
+        },
+      }),
+    },
+  });
+}
+
 describe("Tasks through the Telegram Channel", () => {
   it("reports an empty incomplete Tasks list", async () => {
     expect(await askForTasks({ async listIncomplete() { return { tasks: [], truncated: false }; } }))
@@ -126,5 +174,46 @@ describe("Tasks through the Telegram Channel", () => {
   ] as const)("reports a %s Google Tasks response", async (failure, message) => {
     expect(await askForTasks({ async listIncomplete() { throw new TasksAdapterError(failure); } }))
       .toEqual([message]);
+  });
+
+  it("automatically creates one Prepared Task from an Owner Telegram update", async () => {
+    const createTask = vi.fn(async () => ({ taskId: "task-1" }));
+    const outbound: string[] = [];
+    const channel = createBudTelegramChannel(config, {
+      telegramFetch: vi.fn<typeof fetch>(async (_request, init) => {
+        const text = (JSON.parse(String(init?.body)) as { text?: string }).text;
+        if (text) outbound.push(text);
+        return Response.json({ ok: true, result: { message_id: 8, chat: { id: 42, type: "private" } } });
+      }),
+    });
+    const pending: Promise<unknown>[] = [];
+    const args = {
+      async send(input: unknown, options: { state: TelegramChannelState }) {
+        const result = await createOneAutomaticTask({
+          message: (input as { message: string }).message, principalId: "telegram:42",
+        }, { createTask, async listIncomplete() { return { tasks: [], truncated: false }; } });
+        await (channel as any).adapter.createAdapterContext({
+          ctx: {}, session: { continuationToken: "token", setContinuationToken() {} }, state: options.state,
+        }).telegram.sendMessage(result.text);
+        return { id: "session" } as Session;
+      },
+      waitUntil(task: Promise<unknown>) { pending.push(task); },
+      async resolveActiveSession() { return undefined; },
+    } as unknown as RouteHandlerArgs<TelegramChannelState>;
+
+    await channel.routes[0]!.handler(new Request("https://bud.test/eve/v1/telegram", {
+      method: "POST",
+      headers: { "content-type": "application/json",
+        "x-telegram-bot-api-secret-token": config.telegramWebhookSecret },
+      body: JSON.stringify({ update_id: 2, message: { message_id: 9, date: 0,
+        chat: { id: 42, type: "private" }, from: { id: 42, is_bot: false, first_name: "Owner" },
+        text: "Create task: Channel test task" } }),
+    }), args);
+    await Promise.all(pending);
+
+    expect(createTask).toHaveBeenCalledWith({
+      title: "Channel test task", notes: null, dueDate: null, idempotencyKey: "create-call",
+    });
+    expect(outbound).toEqual(["Created Channel test task."]);
   });
 });
