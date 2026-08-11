@@ -100,6 +100,21 @@ describe("Siri capture HTTP channel", () => {
     await expect(response.json()).resolves.toEqual({ error: "capture_not_configured" });
   });
 
+  it("accepts a UUIDv7 invocation ID from Shortcuts", async () => {
+    const channel = createTestSiriChannel(config, {} as never);
+    const response = await channel.routes[0]!.handler(new Request("https://bud.test/eve/v1/siri", {
+      method: "POST", headers: { authorization: `Bearer ${captureToken}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        message: "Read my calendar", requestId: "0198427d-f8c4-7d30-8c46-669bba1b8792",
+      }),
+    }), { receive: vi.fn(async () => completion("Your calendar is clear.")) } as unknown as CaptureRouteArgs) as Response;
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      speech: "Your calendar is clear.", status: "completed",
+    });
+  });
+
   it("rejects empty capture text before starting a Conversation turn", async () => {
     const channel = createTestSiriChannel(config, {} as never);
     const receive = vi.fn();
