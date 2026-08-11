@@ -77,14 +77,18 @@ POST /eve/v1/siri
 Authorization: Bearer <BUD_SIRI_CAPTURE_TOKEN>
 Content-Type: application/json
 
-{"message":"Remind me to order furnace filters"}
+{"message":"Remind me to order furnace filters","requestId":"a3c00f6c-84b5-4bc4-998b-6a9e1f5df622"}
 ```
 
-Authenticated, non-empty messages of at most 2,000 characters are accepted
-into the Owner's existing private Telegram Conversation. The route responds
-immediately with HTTP 202 and a short acknowledgement; Bud's substantive reply,
-clarifications, and Approval Requests remain in Telegram. The capture token
-cannot itself approve a Calendar or Tasks write.
+Authenticated, non-empty messages of at most 2,000 characters and a UUID per
+Shortcut invocation enter the Owner's private Telegram Conversation. The input
+is first recorded as `🎙 You via Siri: …`; the endpoint waits up to ten seconds
+for a completed response. It returns HTTP 200 with `{ "status": "completed",
+"speech": "…" }` for responses up to 800 characters, otherwise HTTP 202 with
+`pending` and a Telegram handoff. Retrying a UUID returns the saved outcome
+without starting another turn. Siri capture requires the configured Upstash
+Redis integration so that replay protection survives server restarts. The
+capture token cannot itself approve a Calendar or Tasks write.
 
 ## Calendar reads
 

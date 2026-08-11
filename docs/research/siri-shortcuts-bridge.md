@@ -76,17 +76,17 @@ Target happy path:
 > Owner: “Siri, Tell Bud.”  
 > Siri: “What should I tell Bud?”  
 > Owner: “Remind me to order furnace filters this weekend.”  
-> Siri: “Got it. I sent that to Bud.”
+> Siri: “I’ll remind you to order furnace filters this weekend.”
 
 Recommended actions:
 
 1. **Ask for Input** with type Text and prompt “What should I tell Bud?” Apple documents that the answer becomes the next action's input/Magic Variable ([Apple Ask for Input](https://support.apple.com/guide/shortcuts/use-the-ask-for-input-action-apd68b5c9161/ios)). Prototype **Dictate Text** as an alternative, but do not assume it is more hands-free: actions that use the microphone can have extra execution limitations, including opening Shortcuts in some contexts ([Apple action limitations](https://support.apple.com/en-ie/guide/shortcuts/-apd081d9d61f/ios)).
-2. Build a Dictionary containing `message`, `clientRequestId`, `capturedAt`, `source: "siri-shortcut"`, and optionally the device timezone.
-3. **Get Contents of URL** to `POST` JSON to `https://<bud-host>/capture`. Apple documents that this action supports GET, POST, PUT, PATCH, and DELETE; POST/PUT/PATCH can send JSON, Form, or File request bodies ([Apple API request guide](https://support.apple.com/en-au/guide/shortcuts/apd58d46713f/ios)).
-4. Read a small JSON response such as `{ "status": "accepted", "acknowledgement": "Got it. I sent that to Bud." }`.
+2. Generate a UUID for this invocation and build a Dictionary containing `message` and `requestId`. Keep that UUID if Shortcuts retries the request; generate another only for the next invocation.
+3. **Get Contents of URL** to `POST` JSON to `https://<bud-host>/eve/v1/siri`, with the capture bearer token in `Authorization`. Apple documents that this action supports GET, POST, PUT, PATCH, and DELETE; POST/PUT/PATCH can send JSON, Form, or File request bodies ([Apple API request guide](https://support.apple.com/en-au/guide/shortcuts/apd58d46713f/ios)).
+4. Read `{ "status": "completed" | "pending", "speech": "…" }`. For `completed`, use **Speak Text** with `speech`; for `pending`, speak the handoff and end—the full answer remains in Telegram.
 5. Use **Stop and Output → Respond** so Siri has an explicit completion response ([Apple Stop and Output](https://support.apple.com/en-ca/guide/shortcuts/apda9578f70f/ios)). Optionally also use **Show Notification** for a persistent visual receipt; it posts immediately and lets the Shortcut continue ([Apple Show Notification](https://support.apple.com/guide/shortcuts/use-the-show-notification-action-apd2175adcab/ios)).
 
-The endpoint should return the receipt quickly. It should not hold the Siri invocation open while a model reasons, calls Google, asks a clarification, or waits for approval. Bud can send the substantive answer or Approval Request to Telegram afterward.
+The endpoint observes the current Conversation turn for up to ten seconds. It returns a short completed response when one is ready; a timeout, clarification, or long response hands off to Telegram without cancelling the Conversation.
 
 ### What the Justin Melendez video demonstrates
 
